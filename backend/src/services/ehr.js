@@ -1,0 +1,2 @@
+import {EHRRecord} from '../models/index.js';import {audit} from './audit.js';
+export async function safeRoutineEHRUpdate({hospitalId,patientId,outreachTaskId,summary}){const rec=await EHRRecord.create({hospitalId,patientId,encounterId:`OUT-${outreachTaskId}`,followUpStatus:'ROUTINE_COMPLETED',summary,source:'post_discharge_outreach',updatedBy:'SYSTEM'});await audit({hospitalId,action:'EHR_UPDATE',entityType:'EHRRecord',entityId:String(rec._id),details:{patientId:String(patientId),outreachTaskId:String(outreachTaskId),reason:'validated routine follow-up'}});return rec;}

@@ -1,0 +1,5 @@
+{
+  "name":"careflow-ai-backend","version":"1.0.0","type":"module","private":true,
+  "scripts":{"dev":"node --watch src/server.js","start":"node src/server.js","seed":"node src/seed.js"},
+  "dependencies":{"@google/genai":"latest","@sendgrid/mail":"latest","bcryptjs":"latest","cloudinary":"latest","cors":"latest","dotenv":"latest","express":"latest","express-rate-limit":"latest","jsonwebtoken":"latest","mongoose":"latest","multer":"latest","node-cron":"latest","uuid":"latest","zod":"latest"}
+}
