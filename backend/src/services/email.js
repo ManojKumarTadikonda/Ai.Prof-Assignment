@@ -19,6 +19,6 @@ export async function sendOutreachEmail({
     return { dev: true };
   }
   console.log("[EMAIL SEND]", msg);
-  // await sgMail.send(msg);
-  // return { sent: true };
+  await sgMail.send(msg);
+  return { sent: true };
 }
