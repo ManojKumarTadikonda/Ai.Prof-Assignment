@@ -293,8 +293,11 @@ async function downloadCloudinaryAudio(audioUrl, mimeType = "audio/webm") {
   const contentType =
     response.headers.get("content-type")?.split(";")[0] || mimeType;
 
-  if (!contentType.startsWith("audio/")) {
-    throw new Error(`Unsupported audio content type: ${contentType}`);
+  const isAudioContent =
+    contentType.startsWith("audio/") || contentType === "video/webm";
+
+  if (!isAudioContent) {
+    throw new Error(`Unsupported media content type: ${contentType}`);
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
@@ -321,6 +324,6 @@ async function downloadCloudinaryAudio(audioUrl, mimeType = "audio/webm") {
 
   return {
     tempPath,
-    mimeType: contentType,
+    mimeType: contentType === "video/webm" ? "audio/webm" : contentType,
   };
 }
