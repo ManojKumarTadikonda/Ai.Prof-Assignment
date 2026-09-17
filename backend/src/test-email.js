@@ -1,20 +1,9 @@
-import { testSendEmail } from "./services/email.js";
+import 'dotenv/config';
+import {sendOutreachEmail} from './services/email.js';
 
-const TEST_EMAIL = "n210519@rguktn.ac.in";
-
-try {
-  const result = await testSendEmail(TEST_EMAIL);
-
-  console.log("✅ EMAIL SENT SUCCESSFULLY");
-  console.log(result);
-} catch (error) {
-  console.error("❌ EMAIL FAILED");
-
-  if (error.response?.body) {
-    console.error(
-      JSON.stringify(error.response.body, null, 2)
-    );
-  } else {
-    console.error(error);
-  }
-}
+const to=process.env.TEST_EMAIL_TO;
+if(!to){console.error('Set TEST_EMAIL_TO in backend/.env before running this test.');process.exit(1);}
+const link=process.env.APP_URL||'http://localhost:5173';
+console.log(`Sending test email to ${to} using link base ${link}`);
+const result=await sendOutreachEmail({to,patientName:'Demo Patient',link:`${link}/patient/followup/TEST-TOKEN`,hospitalName:'CareFlow AI Demo Hospital'});
+console.log('Email test result:',result);

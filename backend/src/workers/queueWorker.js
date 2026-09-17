@@ -1,16 +1,11 @@
 import cron from 'node-cron';
+import {OutreachTask} from '../models/index.js';
 import {processQueueOnce} from './queueLogic.js';
 
-// Manual queue processing is enabled by default for the prototype so that
-// the UI's "Start Queue" action is visible and deterministic during demos.
-// Set AUTO_QUEUE_WORKER=true to also process the queue every 2 minutes.
 export function startWorker(){
-  if(String(process.env.AUTO_QUEUE_WORKER).toLowerCase()!=='true'){
-    console.log('Queue worker disabled (manual Start Queue mode).');
-    return;
-  }
+  if(String(process.env.AUTO_QUEUE_WORKER||'false').toLowerCase()!=='true') return;
   cron.schedule('*/2 * * * *',async()=>{
-    try{await processQueueOnce()}catch(e){console.error('queue worker',e)}
+    try{await processQueueOnce();console.log('[QUEUE WORKER] processed queue');}
+    catch(e){console.error('[QUEUE WORKER]',e);}
   });
-  console.log('Queue worker enabled (2-minute polling).');
 }
