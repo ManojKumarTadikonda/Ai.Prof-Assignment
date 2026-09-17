@@ -1,17 +1,318 @@
-import mongoose from 'mongoose';
-const {Schema,model}=mongoose;
-const opts={timestamps:true};
-const tenant={type:Schema.Types.ObjectId,ref:'Hospital',required:true,index:true};
+import mongoose from "mongoose";
+const { Schema, model } = mongoose;
+const opts = { timestamps: true };
+const tenant = {
+  type: Schema.Types.ObjectId,
+  ref: "Hospital",
+  required: true,
+  index: true,
+};
 
-export const Hospital=model('Hospital',new Schema({name:{type:String,required:true},code:{type:String,required:true,unique:true},timezone:{type:String,default:'Asia/Kolkata'},callingHours:{start:{type:String,default:'09:00'},end:{type:String,default:'18:00'}},outboundCapacity:{type:Number,default:5},retry:{maxAttempts:{type:Number,default:3},backoffMinutes:{type:Number,default:30}},status:{type:String,default:'ACTIVE'}} ,opts));
-export const User=model('User',new Schema({hospitalId:{...tenant,required:false},name:String,email:{type:String,unique:true},passwordHash:String,role:{type:String,enum:['PLATFORM_ADMIN','HOSPITAL_ADMIN','CAMPAIGN_MANAGER','CLINICAL_REVIEWER'],required:true},active:{type:Boolean,default:true}},opts));
-export const Patient=model('Patient',new Schema({hospitalId:tenant,externalId:String,name:String,email:String,phone:String,dischargeDate:Date,dischargeStatus:{type:String,default:'DISCHARGED'},communicationConsent:{type:Boolean,default:true},communicationEligible:{type:Boolean,default:true},risk:{type:String,enum:['urgent','concerning','routine','unknown'],default:'unknown'},requirements:[String],metadata:Schema.Types.Mixed},{...opts,indexes:[{hospitalId:1,email:1},{hospitalId:1,dischargeDate:1}]}));
-export const Protocol=model('Protocol',new Schema({hospitalId:tenant,name:String,version:String,active:{type:Boolean,default:true},rules:[{trigger:String,classification:{type:String,enum:['routine','concerning','urgent','uncertain']},requiresHumanReview:Boolean,reason:String}],sourceText:String},opts));
-export const Campaign=model('Campaign',new Schema({hospitalId:tenant,name:String,status:{type:String,enum:['DRAFT','READY','SCHEDULED','RUNNING','PAUSED','COMPLETED'],default:'DRAFT'},priority:{type:Number,default:10},followUpDays:{type:Number,default:7},protocolId:{type:Schema.Types.ObjectId,ref:'Protocol'},questions:[{id:String,text:String,required:{type:Boolean,default:true},responseTypes:{type:[String],default:['TEXT','VOICE']}}]},opts));
-export const OutreachTask=model('OutreachTask',new Schema({hospitalId:tenant,patientId:{type:Schema.Types.ObjectId,ref:'Patient',required:true},campaignId:{type:Schema.Types.ObjectId,ref:'Campaign',required:true},status:{type:String,enum:['PENDING','SCHEDULED','CALLING','CONNECTED','COMPLETED','NO_ANSWER','BUSY','VOICEMAIL','DROPPED','RETRY_SCHEDULED','CALLBACK_SCHEDULED','ESCALATED','MANUAL_FOLLOW_UP','FAILED'],default:'PENDING'},aiProcessingStatus:{type:String,enum:['NOT_STARTED','PROCESSING','COMPLETED','HUMAN_REVIEW','FAILED'],default:'NOT_STARTED'},aiProcessingError:String,aiProcessedAt:Date,priorityScore:{type:Number,default:0},attempts:{type:Number,default:0},nextAttemptAt:Date,deadline:Date,callbackAt:Date,lockId:String,lockedAt:Date,lastError:String,contactedAt:Date,completedAt:Date},{...opts,indexes:[{hospitalId:1,status:1,priorityScore:-1},{status:1,nextAttemptAt:1}]}));
-export const PatientResponse=model('PatientResponse',new Schema({hospitalId:tenant,patientId:{type:Schema.Types.ObjectId,ref:'Patient'},campaignId:{type:Schema.Types.ObjectId,ref:'Campaign'},outreachTaskId:{type:Schema.Types.ObjectId,ref:'OutreachTask'},questionId:String,responseType:{type:String,enum:['TEXT','VOICE']},text:String,audio:{provider:String,assetId:String,secureUrl:String,mimeType:String,duration:Number},transcript:String,aiAssessment:Schema.Types.Mixed},opts));
-export const OutreachSession=model('OutreachSession',new Schema({hospitalId:tenant,patientId:{type:Schema.Types.ObjectId,ref:'Patient'},campaignId:{type:Schema.Types.ObjectId,ref:'Campaign'},outreachTaskId:{type:Schema.Types.ObjectId,ref:'OutreachTask'},tokenHash:{type:String,unique:true},expiresAt:Date,submittedAt:Date,used:{type:Boolean,default:false}},opts));
-export const AIAssessment=model('AIAssessment',new Schema({hospitalId:tenant,patientId:{type:Schema.Types.ObjectId,ref:'Patient'},outreachTaskId:{type:Schema.Types.ObjectId,ref:'OutreachTask'},assessmentNo:Number,classification:String,evidence:[String],uncertainty:String,requiresHumanReview:Boolean,protocolMatches:Boolean,safetyFlags:[String],rawJson:Schema.Types.Mixed},opts));
-export const Escalation=model('Escalation',new Schema({hospitalId:tenant,patientId:{type:Schema.Types.ObjectId,ref:'Patient'},outreachTaskId:{type:Schema.Types.ObjectId,ref:'OutreachTask'},status:{type:String,enum:['OPEN','ASSIGNED','IN_REVIEW','WAITING_FOR_INFORMATION','RESOLVED','CLOSED'],default:'OPEN'},reason:String,priority:String,assignedTo:{type:Schema.Types.ObjectId,ref:'User'},resolution:String},opts));
-export const EHRRecord=model('EHRRecord',new Schema({hospitalId:tenant,patientId:{type:Schema.Types.ObjectId,ref:'Patient'},encounterId:String,followUpStatus:String,summary:String,source:String,updatedBy:String},opts));
-export const AuditLog=model('AuditLog',new Schema({hospitalId:{type:Schema.Types.ObjectId,ref:'Hospital'},actorType:String,actorId:String,action:String,entityType:String,entityId:String,details:Schema.Types.Mixed},opts));
+export const Hospital = model(
+  "Hospital",
+  new Schema(
+    {
+      name: { type: String, required: true },
+      code: { type: String, required: true, unique: true },
+      timezone: { type: String, default: "Asia/Kolkata" },
+      callingHours: {
+        start: { type: String, default: "09:00" },
+        end: { type: String, default: "18:00" },
+      },
+      outboundCapacity: { type: Number, default: 5 },
+      retry: {
+        maxAttempts: { type: Number, default: 3 },
+        backoffMinutes: { type: Number, default: 30 },
+      },
+      status: { type: String, default: "ACTIVE" },
+    },
+    opts,
+  ),
+);
+export const User = model(
+  "User",
+  new Schema(
+    {
+      hospitalId: { ...tenant, required: false },
+      name: String,
+      email: { type: String, unique: true },
+      passwordHash: String,
+      role: {
+        type: String,
+        enum: [
+          "PLATFORM_ADMIN",
+          "HOSPITAL_ADMIN",
+          "CAMPAIGN_MANAGER",
+          "CLINICAL_REVIEWER",
+        ],
+        required: true,
+      },
+      active: { type: Boolean, default: true },
+    },
+    opts,
+  ),
+);
+export const Patient = model(
+  "Patient",
+  new Schema(
+    {
+      hospitalId: tenant,
+      externalId: String,
+      name: String,
+      email: String,
+      phone: String,
+      dischargeDate: Date,
+      dischargeStatus: { type: String, default: "DISCHARGED" },
+      communicationConsent: { type: Boolean, default: true },
+      communicationEligible: { type: Boolean, default: true },
+      risk: {
+        type: String,
+        enum: ["urgent", "concerning", "routine", "unknown"],
+        default: "unknown",
+      },
+      requirements: [String],
+      metadata: Schema.Types.Mixed,
+    },
+    {
+      ...opts,
+      indexes: [
+        { hospitalId: 1, email: 1 },
+        { hospitalId: 1, dischargeDate: 1 },
+      ],
+    },
+  ),
+);
+export const Protocol = model(
+  "Protocol",
+  new Schema(
+    {
+      hospitalId: tenant,
+      name: String,
+      version: String,
+      active: { type: Boolean, default: true },
+      rules: [
+        {
+          trigger: String,
+          classification: {
+            type: String,
+            enum: ["routine", "concerning", "urgent", "uncertain"],
+          },
+          requiresHumanReview: Boolean,
+          reason: String,
+        },
+      ],
+      sourceText: String,
+    },
+    opts,
+  ),
+);
+export const Campaign = model(
+  "Campaign",
+  new Schema(
+    {
+      hospitalId: tenant,
+      name: String,
+      status: {
+        type: String,
+        enum: ["DRAFT", "READY", "SCHEDULED", "RUNNING", "PAUSED", "COMPLETED"],
+        default: "DRAFT",
+      },
+      priority: { type: Number, default: 10 },
+      followUpDays: { type: Number, default: 7 },
+      protocolId: { type: Schema.Types.ObjectId, ref: "Protocol" },
+      questions: [
+        {
+          id: String,
+          text: String,
+          required: { type: Boolean, default: true },
+          responseTypes: { type: [String], default: ["TEXT", "VOICE"] },
+        },
+      ],
+    },
+    opts,
+  ),
+);
+export const OutreachTask = model(
+  "OutreachTask",
+  new Schema(
+    {
+      hospitalId: tenant,
+      patientId: {
+        type: Schema.Types.ObjectId,
+        ref: "Patient",
+        required: true,
+      },
+      campaignId: {
+        type: Schema.Types.ObjectId,
+        ref: "Campaign",
+        required: true,
+      },
+      status: {
+        type: String,
+        enum: [
+          "PENDING",
+          "SCHEDULED",
+          "CALLING",
+          "CONNECTED",
+          "COMPLETED",
+          "NO_ANSWER",
+          "BUSY",
+          "VOICEMAIL",
+          "DROPPED",
+          "RETRY_SCHEDULED",
+          "CALLBACK_SCHEDULED",
+          "ESCALATED",
+          "MANUAL_FOLLOW_UP",
+          "FAILED",
+        ],
+        default: "PENDING",
+      },
+      aiProcessingStatus: {
+        type: String,
+        enum: [
+          "NOT_STARTED",
+          "PROCESSING",
+          "COMPLETED",
+          "HUMAN_REVIEW",
+          "FAILED",
+        ],
+        default: "NOT_STARTED",
+      },
+      aiProcessingError: String,
+      aiProcessedAt: Date,
+      priorityScore: { type: Number, default: 0 },
+      attempts: { type: Number, default: 0 },
+      nextAttemptAt: Date,
+      deadline: Date,
+      callbackAt: Date,
+      lockId: String,
+      lockedAt: Date,
+      lastError: String,
+      contactedAt: Date,
+      completedAt: Date,
+    },
+    {
+      ...opts,
+      indexes: [
+        { hospitalId: 1, status: 1, priorityScore: -1 },
+        { status: 1, nextAttemptAt: 1 },
+      ],
+    },
+  ),
+);
+export const PatientResponse = model(
+  "PatientResponse",
+  new Schema(
+    {
+      hospitalId: tenant,
+      patientId: { type: Schema.Types.ObjectId, ref: "Patient" },
+      campaignId: { type: Schema.Types.ObjectId, ref: "Campaign" },
+      outreachTaskId: { type: Schema.Types.ObjectId, ref: "OutreachTask" },
+      questionId: String,
+      responseType: { type: String, enum: ["TEXT", "VOICE"] },
+      text: String,
+      audio: {
+        provider: String,
+        assetId: String,
+        secureUrl: String,
+        mimeType: String,
+        duration: Number,
+      },
+      transcript: String,
+      aiAssessment: Schema.Types.Mixed,
+    },
+    opts,
+  ),
+);
+export const OutreachSession = model(
+  "OutreachSession",
+  new Schema(
+    {
+      hospitalId: tenant,
+      patientId: { type: Schema.Types.ObjectId, ref: "Patient" },
+      campaignId: { type: Schema.Types.ObjectId, ref: "Campaign" },
+      outreachTaskId: { type: Schema.Types.ObjectId, ref: "OutreachTask" },
+      tokenHash: { type: String, unique: true },
+      expiresAt: Date,
+      submittedAt: Date,
+      used: { type: Boolean, default: false },
+    },
+    opts,
+  ),
+);
+export const AIAssessment = model(
+  "AIAssessment",
+  new Schema(
+    {
+      hospitalId: tenant,
+      patientId: { type: Schema.Types.ObjectId, ref: "Patient" },
+      outreachTaskId: { type: Schema.Types.ObjectId, ref: "OutreachTask" },
+      assessmentNo: Number,
+      classification: String,
+      evidence: [String],
+      uncertainty: String,
+      requiresHumanReview: Boolean,
+      protocolMatches: Boolean,
+      safetyFlags: [String],
+      rawJson: Schema.Types.Mixed,
+    },
+    opts,
+  ),
+);
+export const Escalation = model(
+  "Escalation",
+  new Schema(
+    {
+      hospitalId: tenant,
+      patientId: { type: Schema.Types.ObjectId, ref: "Patient" },
+      outreachTaskId: { type: Schema.Types.ObjectId, ref: "OutreachTask" },
+      status: {
+        type: String,
+        enum: [
+          "OPEN",
+          "ASSIGNED",
+          "IN_REVIEW",
+          "WAITING_FOR_INFORMATION",
+          "RESOLVED",
+          "CLOSED",
+        ],
+        default: "OPEN",
+      },
+      reason: String,
+      priority: String,
+      assignedTo: { type: Schema.Types.ObjectId, ref: "User" },
+      resolution: String,
+    },
+    opts,
+  ),
+);
+export const EHRRecord = model(
+  "EHRRecord",
+  new Schema(
+    {
+      hospitalId: tenant,
+      patientId: { type: Schema.Types.ObjectId, ref: "Patient" },
+      encounterId: String,
+      followUpStatus: String,
+      summary: String,
+      source: String,
+      updatedBy: String,
+    },
+    opts,
+  ),
+);
+export const AuditLog = model(
+  "AuditLog",
+  new Schema(
+    {
+      hospitalId: { type: Schema.Types.ObjectId, ref: "Hospital" },
+      actorType: String,
+      actorId: String,
+      action: String,
+      entityType: String,
+      entityId: String,
+      details: Schema.Types.Mixed,
+    },
+    opts,
+  ),
+);
