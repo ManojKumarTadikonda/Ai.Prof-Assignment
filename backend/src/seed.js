@@ -13,8 +13,8 @@ await Promise.all([
   OutreachTask.deleteMany({}), PatientResponse.deleteMany({}), OutreachSession.deleteMany({}), AIAssessment.deleteMany({}), Escalation.deleteMany({}), EHRRecord.deleteMany({}), AuditLog.deleteMany({}), WorkflowEvent.deleteMany({}), SimulationRun.deleteMany({}), Communication.deleteMany({}), Notification.deleteMany({}), Encounter.deleteMany({}), Condition.deleteMany({}), Observation.deleteMany({}), Medication.deleteMany({}), CarePlan.deleteMany({}),
 ]);
 const [a, b] = await Hospital.create([
-  { name: "Apollo Demo Hospital", code: "HOSP-A", outboundCapacity: 2, contactEmail: "your-email1.gmail.com", escalationContacts: [{ name: "Demo Clinical Reviewer", email: "n210519@rguktn.ac.in", role: "Clinical Reviewer" }] },
-  { name: "CityCare Demo Hospital", code: "HOSP-B", outboundCapacity: 1, contactEmail: "your-email2.gmail.com", escalationContacts: [{ name: "Demo Clinical Reviewer B", email: "manojtadikonda5@gmail.com", role: "Clinical Reviewer" }] },
+  { name: "Apollo Demo Hospital", code: "HOSP-A", outboundCapacity: 2, contactEmail: "your-email1.gmail.com", escalationContacts: [{ name: "Demo Clinical Reviewer", email: "your-email4.gmail.com", role: "Clinical Reviewer" }] },
+  { name: "CityCare Demo Hospital", code: "HOSP-B", outboundCapacity: 1, contactEmail: "your-email2.gmail.com", escalationContacts: [{ name: "Demo Clinical Reviewer B", email: "your-email3.gmail.com", role: "Clinical Reviewer" }] },
 ]);
 const hash = await bcrypt.hash("demo123", 10);
 await User.create([
