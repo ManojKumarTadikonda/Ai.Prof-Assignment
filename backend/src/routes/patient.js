@@ -28,6 +28,10 @@ import {
 } from "../services/validation.js";
 
 import { safeRoutineEHRUpdate } from "../services/ehr.js";
+import { searchHospitalKnowledge } from "../services/retrieval.js";
+import { createEscalation, updateMockEHR } from "../services/tools/index.js";
+import { notifyHospital } from "../services/notifications.js";
+import { env as appEnv } from "../config/env.js";
 import { audit } from "../services/audit.js";
 
 const r = Router();
@@ -176,6 +180,7 @@ r.post(
       }
 
       const qid = req.body.questionId;
+      console.log(`[PATIENT] Response received | session=${s?._id || "unknown"} | question=${qid} | type=${req.file ? "VOICE" : "TEXT"}`);
 
       const c = await Campaign.findById(s.campaignId);
 
@@ -332,6 +337,7 @@ r.post("/outreach/:token/submit", async (req, res, next) => {
        Audit patient submission
     --------------------------------------------------- */
 
+    console.log(`[PATIENT] Follow-up submitted | task=${s.outreachTaskId} | responses=${responses.length}`);
     await audit({
       hospitalId: s.hospitalId,
       action: "FOLLOWUP_SUBMITTED",
@@ -406,11 +412,14 @@ async function processSubmittedFollowup({
      1. GET CLINICAL PROTOCOL
   ------------------------------------------------------- */
 
-  const protocol = await Protocol.findById(
-    campaign.protocolId
-  ).lean();
+  console.log(`[AI] ===== START PROCESSING | task=${taskId} =====`);
+  const protocol = await Protocol.findOne({ _id: campaign.protocolId, hospitalId: session.hospitalId, active: true }).lean();
+  console.log(`[AI] Hospital protocol loaded | protocol=${protocol?._id || "NOT_FOUND"}`);
 
-  const protocolText = protocol?.sourceText || "";
+  const preliminaryText = responses.map((r) => `${r.questionId}: ${r.text || r.transcript || ""}`).join("\n");
+  const knowledge = await searchHospitalKnowledge({ hospitalId: session.hospitalId, query: preliminaryText, protocolId: campaign.protocolId, limit: 5 });
+  console.log(`[AI] Tenant-aware knowledge retrieval complete | sources=${knowledge.length}`);
+  const protocolText = knowledge.map((x) => `[SOURCE: ${x.sourceReference}]\n${x.content}`).join("\n\n");
 
   /* -------------------------------------------------------
      2. PREPARE ALL RESPONSES
@@ -445,20 +454,20 @@ async function processSubmittedFollowup({
        - human review requirement
   ------------------------------------------------------- */
 
+  const ai1Started = Date.now();
+  console.log(`[AI] Assessment #1 started | task=${taskId}`);
   const aiResult1 = await assessPatientVoiceResponses({
     responses,
     protocolText,
   });
+  const ai1LatencyMs = Date.now() - ai1Started;
 
   console.log(
     "AI Assessment #1 status:",
     aiResult1.ai_status
   );
 
-  console.log(
-    "AI Assessment #1 classification:",
-    aiResult1.classification
-  );
+  console.log(`[AI] Assessment #1 completed | status=${aiResult1.ai_status || "OK"} | classification=${aiResult1.classification} | latency=${ai1LatencyMs}ms`);
 
   /* -------------------------------------------------------
      4. BUILD TRANSCRIPT ANSWERS
@@ -555,20 +564,20 @@ async function processSubmittedFollowup({
      This gives us an independent assessment.
   ------------------------------------------------------- */
 
+  const ai2Started = Date.now();
+  console.log(`[AI] Assessment #2 started | task=${taskId}`);
   const aiResult2 = await assessPatientTranscripts({
     answers,
     protocolText,
   });
+  const ai2LatencyMs = Date.now() - ai2Started;
 
   console.log(
     "AI Assessment #2 status:",
     aiResult2.ai_status
   );
 
-  console.log(
-    "AI Assessment #2 classification:",
-    aiResult2.classification
-  );
+  console.log(`[AI] Assessment #2 completed | status=${aiResult2.ai_status || "OK"} | classification=${aiResult2.classification} | latency=${ai2LatencyMs}ms`);
 
   /* -------------------------------------------------------
      7. BUILD PROTOCOL ANSWERS
@@ -629,6 +638,8 @@ async function processSubmittedFollowup({
        Protocol can force human review/classification
     ----------------------------------------------------- */
 
+    console.log(`[PROTOCOL] Assessment ${i + 1} checked | matches=${check.hits?.length || 0} | forced=${check.forcedClassification || "none"} | humanReview=${Boolean(check.requiresHumanReview)}`);
+
     if (check.forcedClassification) {
       result.classification =
         check.forcedClassification;
@@ -668,6 +679,13 @@ async function processSubmittedFollowup({
 
       assessmentNo: i + 1,
 
+      modelProvider: "Google Gemini",
+      modelName: appEnv.geminiModel,
+      latencyMs: i === 0 ? ai1LatencyMs : ai2LatencyMs,
+      tokenUsage: result.ai_meta?.usageMetadata || null,
+      retrievalSources: knowledge.map((x) => x.sourceReference),
+      validationStatus: "VALIDATED",
+
       classification:
         result.classification,
 
@@ -703,7 +721,9 @@ async function processSubmittedFollowup({
      Gemini calls = exactly 2.
   ------------------------------------------------------- */
 
+  console.log(`[CONSENSUS] Comparing ${assessments.length} independent assessments`);
   const cns = consensus(assessments);
+  console.log(`[CONSENSUS] Result | classification=${cns.classification} | humanReview=${cns.requiresHumanReview} | reason=${cns.reason || "none"}`);
 
   /* -------------------------------------------------------
      10. PROVIDER FAILURE OVERRIDE
@@ -760,23 +780,29 @@ async function processSubmittedFollowup({
     ----------------------------------------------------- */
 
     if (!existingEscalation) {
-      await Escalation.create({
+      console.log(`[ESCALATION] Creating clinical review | task=${taskId} | classification=${cns.classification}`);
+      const created = await createEscalation(
+        { hospitalId: session.hospitalId },
+        {
+          hospitalId: session.hospitalId,
+          patientId: session.patientId,
+          outreachTaskId: taskId,
+          trigger: cns.reason || "AI clinical review",
+          clinicalIndicators: assessments.flatMap((a) => a.evidence || []),
+          triageResult: cns.classification || "uncertain",
+          consensusResult: cns,
+          reason: cns.reason || "Clinical review required.",
+          priority: cns.classification || "uncertain",
+        },
+      );
+      await notifyHospital({
         hospitalId: session.hospitalId,
-
-        patientId: session.patientId,
-
-        outreachTaskId: taskId,
-
-        status: "OPEN",
-
-        reason:
-          cns.reason ||
-          "Clinical review required.",
-
-        priority:
-          cns.classification ||
-          "uncertain",
-      });
+        type: "ESCALATION",
+        subject: "CareFlow AI: Clinical review required",
+        message: `A post-discharge outreach case requires human review. Task ${taskId}. Priority: ${cns.classification || "uncertain"}.`,
+        entityType: "Escalation",
+        entityId: created._id,
+      }).catch(() => {});
     }
 
     /* -----------------------------------------------------
@@ -791,6 +817,7 @@ async function processSubmittedFollowup({
     task.aiProcessedAt = new Date();
 
     await task.save();
+    console.log(`[ESCALATION] Task moved to HUMAN_REVIEW | task=${taskId}`);
 
     /* -----------------------------------------------------
        Audit escalation
@@ -837,15 +864,17 @@ async function processSubmittedFollowup({
     )
     .join(" | ");
 
-  await safeRoutineEHRUpdate({
-    hospitalId: session.hospitalId,
-
-    patientId: session.patientId,
-
-    outreachTaskId: taskId,
-
-    summary,
-  });
+  console.log(`[EHR] Routine case approved by AI/protocol pipeline | writing mock EHR | task=${taskId}`);
+  await updateMockEHR(
+    { hospitalId: session.hospitalId },
+    "routine",
+    {
+      hospitalId: session.hospitalId,
+      patientId: session.patientId,
+      outreachTaskId: taskId,
+      summary,
+    },
+  );
 
   /* -------------------------------------------------------
      14. COMPLETE TASK
@@ -861,6 +890,8 @@ async function processSubmittedFollowup({
   task.aiProcessedAt = new Date();
 
   await task.save();
+  console.log(`[EHR] Mock EHR update complete | task=${taskId}`);
+  console.log(`[AI] ===== PROCESS COMPLETE | task=${taskId} | status=${task.status} =====`);
 
   /* -------------------------------------------------------
      15. AUDIT COMPLETION
@@ -912,19 +943,29 @@ async function escalate(
     });
 
   if (!existingEscalation) {
-    await Escalation.create({
+    const created = await createEscalation(
+      { hospitalId: session.hospitalId },
+      {
+        hospitalId: session.hospitalId,
+        patientId: session.patientId,
+        outreachTaskId: taskId,
+        trigger: "AI_OUTPUT_VALIDATION",
+        clinicalIndicators: [reason],
+        triageResult: "uncertain",
+        consensusResult: { classification: "uncertain", reason },
+        status: "OPEN",
+        reason,
+        priority: "uncertain",
+      },
+    );
+    await notifyHospital({
       hospitalId: session.hospitalId,
-
-      patientId: session.patientId,
-
-      outreachTaskId: taskId,
-
-      status: "OPEN",
-
-      reason,
-
-      priority: "uncertain",
-    });
+      type: "ESCALATION",
+      subject: "CareFlow AI: Manual review required",
+      message: `Automated assessment could not be safely completed for task ${taskId}. Manual review is required.`,
+      entityType: "Escalation",
+      entityId: created._id,
+    }).catch(() => {});
   }
 
   /* -------------------------------------------------------

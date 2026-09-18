@@ -8,7 +8,9 @@
     "start": "node src/server.js",
     "seed": "node src/seed.js",
     "test:gemini": "node src/test-gemini.js",
-    "test:email": "node src/test-email.js"
+    "test:email": "node src/test-email.js",
+    "test:core": "node src/tests/core.test.js",
+    "safety:evaluate": "node src/evaluation/runSafetyEvaluation.js"
   },
   "dependencies": {
     "@google/genai": "latest",

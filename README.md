@@ -590,3 +590,45 @@ node src/test-email.js
 
 > [!CAUTION]
 > **Regulatory Notice:** CareFlow AI is an administrative outreach and clinical decision-support prototype. It does not provide definitive medical diagnoses, prescribe medications, or replace certified healthcare practitioners. All clinical data presented in demo environments is synthetic. Real email inboxes should be utilized only with explicit consent during testing.
+
+---
+
+## Prototype PRD Additions
+
+This prototype keeps the original CareFlow architecture and adds the operational controls required for the assignment:
+
+- Atomic outbound capacity reservation and task leasing.
+- Queue state transitions, retry/backoff, callbacks, deadline pressure and stale-worker recovery.
+- A deterministic 25-patient queue simulation that does not require paid telephony.
+- Campaign lifecycle controls: READY, SCHEDULED, RUNNING, PAUSED, COMPLETED, CANCELLED/FAILED.
+- Tenant-aware knowledge retrieval with source references.
+- Controlled AI/application tools for patient lookup, protocol lookup, callback scheduling, escalation and mock EHR operations.
+- FHIR-shaped prototype resources: Encounter, Condition, Observation, Medication, CarePlan and Communication.
+- Operational dashboard metrics and queue health endpoint.
+- Workflow events with idempotency keys.
+- Safety evaluation dataset with TP/FP/TN/FN and false-negative rate calculation.
+- Core automated tests for priority, protocol safety and consensus behavior.
+
+### Queue Simulation
+
+Use the **Queue Simulation** page after logging in as a Campaign Manager/Hospital Admin. Reset reuses the seeded demo patients/tasks created by Campaign → Eligibility. The seed contains 30 demo patients total (24 in Hospital A and 6 in Hospital B), and the same two test inboxes are used for all patient outreach. Start runs the deterministic queue simulation; Step advances one queue cycle; Pause stops it. Real prototype outreach remains available through the original `/api/queue/process` path.
+
+### Safety Evaluation
+
+Run:
+
+```bash
+npm run safety:evaluate
+```
+
+For a no-provider local harness:
+
+```bash
+SAFETY_EVAL_USE_GEMINI=false npm run safety:evaluate
+```
+
+For the actual Gemini-backed evaluation, configure `GEMINI_API_KEY` and run with `SAFETY_EVAL_USE_GEMINI=true`. The script writes `src/evaluation/results.json`.
+
+### Important prototype boundary
+
+Real outbound telephony is intentionally not required. The PRD explicitly allows deterministic call simulation for the core workflow; real telephony is an enhancement. This prototype therefore focuses engineering effort on queue correctness, safety, multi-tenancy, escalation, documentation, mock EHR, observability and evaluation.

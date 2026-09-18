@@ -757,9 +757,8 @@ Return ONLY JSON matching the supplied schema.
 
     return {
       ...parsed,
-
-      ai_status:
-        "COMPLETED",
+      ai_status: "COMPLETED",
+      ai_meta: { model: env.geminiModel, provider: "Google Gemini", usageMetadata: result.usageMetadata || null },
     };
   } catch (error) {
     const status =
@@ -907,9 +906,8 @@ Return ONLY JSON.
 
       return {
         ...parsed,
-
-        ai_status:
-          "COMPLETED",
+        ai_status: "COMPLETED",
+        ai_meta: { model: env.geminiModel, provider: "Google Gemini", usageMetadata: result.usageMetadata || null },
       };
     } catch (error) {
       console.error(

@@ -119,8 +119,11 @@ function Layout({ children }) {
 
   const navItems = [
     { to: "/", label: "Dashboard", show: u.role !== ROLE.CLINICAL_REVIEWER },
+    { to: "/hospitals", label: "Hospitals", show: [ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN].includes(u.role) },
+    { to: "/knowledge", label: "Knowledge", show: [ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN].includes(u.role) },
     { to: "/campaigns", label: "Campaigns", show: canManageCampaigns() },
     { to: "/queue", label: "Outreach Queue", show: canViewQueue() },
+    { to: "/simulation", label: "Queue Simulation", show: canViewQueue() },
     { to: "/reviews", label: "Clinical Review", show: canViewReviews() },
   ].filter((x) => x.show);
 
@@ -187,8 +190,11 @@ function Layout({ children }) {
 }
 
 function pageTitle(path) {
+  if (path.startsWith("/hospitals")) return "Hospital Configuration";
+  if (path.startsWith("/knowledge")) return "Hospital Knowledge";
   if (path.startsWith("/campaigns")) return "Campaigns";
   if (path.startsWith("/queue")) return "Outreach Queue";
+  if (path.startsWith("/simulation")) return "Queue Simulation";
   if (path.startsWith("/reviews")) return "Clinical Review";
   return "Operations Dashboard";
 }
@@ -227,6 +233,13 @@ function Dashboard() {
         ["Open escalations", d.openEscalations, "Needs clinical attention"],
         ["AI processing", d.aiProcessing, "Currently being assessed"],
         ["EHR updates", d.ehrUpdates, "Recorded follow-ups"],
+        ["Queue depth", d.pending, "Pending and scheduled work"],
+        ["Active capacity", `${d.active ?? 0}`, "Currently reserved/calling"],
+        ["Cutoff risk", d.cutoffRisk, "Patients nearing clinical cutoff"],
+        ["Retry backlog", d.retries, "Waiting for another attempt"],
+        ["Manual follow-up", d.manualFollowUps, "Requires staff action"],
+        ["Workflow failures", d.workflowFailures, "Failed asynchronous events"],
+        ["Notification failures", d.notificationFailures, "Staff notification delivery failures"],
       ]
     : [];
 
@@ -280,57 +293,139 @@ function Dashboard() {
   );
 }
 
+function Hospitals() {
+  const [rows, setRows] = useState([]);
+  const [msg, setMsg] = useState("");
+  const [draft, setDraft] = useState({ name: "", code: "", contactEmail: "", timezone: "Asia/Kolkata" });
+  const u = getUser();
+
+  async function load() { try { setRows((await api.get("/hospitals")).data); } catch (e) { setMsg(e.response?.data?.message || "Could not load hospitals"); } }
+  useEffect(() => { load(); }, []);
+  async function save(id, value) {
+    try { await api.patch(`/hospitals/${id}/config`, value); setMsg("Hospital configuration saved."); await load(); }
+    catch (e) { setMsg(e.response?.data?.message || "Could not save hospital configuration"); }
+  }
+  async function create() {
+    if (!draft.name || !draft.code) return setMsg("Hospital name and code are required.");
+    try { await api.post("/hospitals", draft); setDraft({ name: "", code: "", contactEmail: "", timezone: "Asia/Kolkata" }); setMsg("Hospital created."); await load(); }
+    catch (e) { setMsg(e.response?.data?.message || "Could not create hospital"); }
+  }
+
+  return <Layout>
+    <div className="page-intro compact"><div><div className="eyebrow">TENANT CONFIGURATION</div><h2>Hospitals</h2><p className="muted">Configure timezone, calling windows, capacity, retry policy and escalation contacts.</p></div></div>
+    {msg && <div className="alert success">{msg}</div>}
+    {u.role === ROLE.PLATFORM_ADMIN && <section className="panel config-panel"><div className="section-title"><h3>Create hospital tenant</h3></div><div className="form-grid"><input placeholder="Hospital name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/><input placeholder="Code e.g. HOSP-C" value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })}/><input placeholder="Contact email" value={draft.contactEmail} onChange={(e) => setDraft({ ...draft, contactEmail: e.target.value })}/><input placeholder="Timezone" value={draft.timezone} onChange={(e) => setDraft({ ...draft, timezone: e.target.value })}/></div><button className="primary" onClick={create}>Create hospital</button></section>}
+    <div className="config-list">{rows.map((h) => <HospitalCard key={h._id} hospital={h} onSave={save}/>)}</div>
+  </Layout>;
+}
+
+function HospitalCard({ hospital, onSave }) {
+  const [form, setForm] = useState({ ...hospital });
+  const [users, setUsers] = useState([]);
+  const [userForm, setUserForm] = useState({ name: "", email: "", password: "demo123", role: "CAMPAIGN_MANAGER" });
+  const [userMsg, setUserMsg] = useState("");
+  async function loadUsers() { try { setUsers((await api.get(`/hospitals/${hospital._id}/users`)).data); } catch {} }
+  useEffect(() => { loadUsers(); }, [hospital._id]);
+  async function addUser() {
+    try { await api.post(`/hospitals/${hospital._id}/users`, userForm); setUserMsg("User assigned."); setUserForm({ name: "", email: "", password: "demo123", role: "CAMPAIGN_MANAGER" }); await loadUsers(); }
+    catch (e) { setUserMsg(e.response?.data?.message || "Could not assign user"); }
+  }
+  return <section className="panel config-panel">
+    <div className="panel-heading"><div><span className="eyebrow">{hospital.code}</span><h3>{hospital.name}</h3></div><Status value={hospital.status}/></div>
+    <div className="form-grid">
+      <label>Hospital name<input value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })}/></label>
+      <label>Contact email<input value={form.contactEmail || ""} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })}/></label>
+      <label>Timezone<input value={form.timezone || "Asia/Kolkata"} onChange={(e) => setForm({ ...form, timezone: e.target.value })}/></label>
+      <label>Capacity<input type="number" min="1" value={form.outboundCapacity || 1} onChange={(e) => setForm({ ...form, outboundCapacity: Number(e.target.value) })}/></label>
+      <label>Calling start<input value={form.callingHours?.start || "09:00"} onChange={(e) => setForm({ ...form, callingHours: { ...(form.callingHours || {}), start: e.target.value } })}/></label>
+      <label>Calling end<input value={form.callingHours?.end || "18:00"} onChange={(e) => setForm({ ...form, callingHours: { ...(form.callingHours || {}), end: e.target.value } })}/></label>
+      <label>Max attempts<input type="number" min="1" value={form.retry?.maxAttempts || 3} onChange={(e) => setForm({ ...form, retry: { ...(form.retry || {}), maxAttempts: Number(e.target.value) } })}/></label>
+      <label>Backoff minutes<input type="number" min="1" value={form.retry?.backoffMinutes || 5} onChange={(e) => setForm({ ...form, retry: { ...(form.retry || {}), backoffMinutes: Number(e.target.value) } })}/></label>
+    </div>
+    <div className="config-actions"><button className="primary" onClick={() => onSave(hospital._id, { name: form.name, contactEmail: form.contactEmail, timezone: form.timezone, outboundCapacity: form.outboundCapacity, callingHours: form.callingHours, retry: form.retry })}>Save configuration</button></div>
+    <div className="section-title"><h3>Assigned hospital users</h3></div>
+    <div className="user-list">{users.map((x) => <div className="user-row" key={x._id}><strong>{x.name}</strong><span>{x.role.replaceAll("_", " ")}</span><small>{x.email}</small></div>)}</div>
+    <div className="form-grid user-form"><input placeholder="Name" value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })}/><input placeholder="Email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}/><input placeholder="Password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}/><select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}><option>HOSPITAL_ADMIN</option><option>CAMPAIGN_MANAGER</option><option>CLINICAL_REVIEWER</option></select></div>
+    <button onClick={addUser}>Assign user</button>{userMsg && <small className="table-subtext">{userMsg}</small>}
+  </section>;
+}
+
+function Knowledge() {
+  const [rows, setRows] = useState([]);
+  const [form, setForm] = useState({ title: "", sourceReference: "", content: "", tags: "post-discharge" });
+  const [msg, setMsg] = useState("");
+  async function load() { try { setRows((await api.get("/knowledge")).data); } catch (e) { setMsg(e.response?.data?.message || "Could not load knowledge"); } }
+  useEffect(() => { load(); }, []);
+  async function create() {
+    try { await api.post("/knowledge", { ...form, tags: form.tags.split(",").map((x) => x.trim()).filter(Boolean) }); setForm({ title: "", sourceReference: "", content: "", tags: "post-discharge" }); setMsg("Knowledge resource added."); await load(); }
+    catch (e) { setMsg(e.response?.data?.message || "Could not add knowledge resource"); }
+  }
+  return <Layout>
+    <div className="page-intro compact"><div><div className="eyebrow">TENANT-AWARE RETRIEVAL</div><h2>Hospital knowledge</h2><p className="muted">Add hospital-approved guidance that can be retrieved with the active protocol for AI grounding.</p></div></div>
+    {msg && <div className="alert success">{msg}</div>}
+    <section className="panel config-panel"><div className="section-title"><h3>Add knowledge resource</h3></div><div className="form-grid"><input placeholder="Title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}/><input placeholder="Source reference" value={form.sourceReference} onChange={(e) => setForm({ ...form, sourceReference: e.target.value })}/><input placeholder="Tags, comma separated" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })}/></div><textarea className="knowledge-textarea" placeholder="Hospital-approved guidance" value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })}/><button className="primary" onClick={create}>Add resource</button></section>
+    <section className="knowledge-list">{rows.map((x) => <article className="panel knowledge-card" key={x._id}><div className="panel-heading"><div><span className="eyebrow">{x.type}</span><h3>{x.title}</h3></div><Status value={x.active ? "ACTIVE" : "INACTIVE"}/></div><p>{x.content}</p><small>{x.sourceReference || "No source reference"}</small></article>)}</section>
+  </Layout>;
+}
+
 function Campaigns() {
   const [rows, setRows] = useState([]);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState("");
 
-  const load = () =>
-    api
-      .get("/campaigns")
-      .then((r) => setRows(r.data))
-      .catch((e) => setMsg(e.response?.data?.message || "Could not load campaigns"));
-
+  const load = () => api.get("/campaigns").then((r) => setRows(r.data)).catch((e) => setMsg(e.response?.data?.message || "Could not load campaigns"));
   useEffect(() => { load(); }, []);
 
+  async function action(id, status) {
+    setBusy(`${id}:${status}`); setMsg("");
+    try {
+      await api.post(`/campaigns/${id}/transition`, { status });
+      setMsg(`Campaign moved to ${status}.`); await load();
+    } catch (e) { setMsg(e.response?.data?.message || "Campaign action failed"); }
+    finally { setBusy(""); }
+  }
+
   async function run(id) {
-    setBusy(id);
-    setMsg("");
+    setBusy(`${id}:eligibility`); setMsg("");
     try {
       const r = await api.post(`/campaigns/${id}/eligibility/run`);
-      setMsg(`Eligibility complete: ${r.data.eligible} eligible, ${r.data.tasksCreated} new queue tasks.`);
-      await load();
-    } catch (e) {
-      setMsg(e.response?.data?.message || "Eligibility failed");
-    } finally {
-      setBusy("");
-    }
+      setMsg(`Eligibility complete: ${r.data.eligible} eligible, ${r.data.tasksCreated} new queue tasks.`); await load();
+    } catch (e) { setMsg(e.response?.data?.message || "Eligibility failed"); }
+    finally { setBusy(""); }
+  }
+
+  async function estimate(id) {
+    try {
+      const r = await api.post(`/campaigns/${id}/workload/estimate`);
+      setMsg(`Estimated workload: ${r.data.eligiblePatients} patients / ${r.data.expectedAttempts} expected attempts.`); await load();
+    } catch (e) { setMsg(e.response?.data?.message || "Could not estimate workload"); }
   }
 
   return (
     <Layout>
-      <div className="page-intro compact">
-        <div>
-          <div className="eyebrow">OUTREACH PROGRAMS</div>
-          <h2>Campaign operations</h2>
-          <p className="muted">Run eligibility checks and move patients into the prioritized outreach queue.</p>
-        </div>
-      </div>
-      {msg && <div className={msg.includes("complete") ? "alert success" : "alert error"}>{msg}</div>}
+      <div className="page-intro compact"><div><div className="eyebrow">OUTREACH PROGRAMS</div><h2>Campaign operations</h2><p className="muted">Configure lifecycle state, estimate workload and move eligible patients into the prioritized queue.</p></div></div>
+      {msg && <div className={msg.includes("failed") || msg.includes("Could not") ? "alert error" : "alert success"}>{msg}</div>}
       <section className="panel table-panel">
-        <table>
-          <thead><tr><th>Campaign</th><th>Status</th><th>Follow-up window</th><th /></tr></thead>
-          <tbody>
-            {rows.map((c) => (
-              <tr key={c._id}>
-                <td><strong>{c.name}</strong></td>
-                <td><Status value={c.status} /></td>
-                <td>{c.followUpDays} days</td>
-                <td className="align-right"><button disabled={!!busy} onClick={() => run(c._id)}>{busy === c._id ? "Running…" : "Run eligibility"}</button></td>
-              </tr>
-            ))}
-            {!rows.length && <tr><td colSpan="4" className="empty">No campaigns found.</td></tr>}
-          </tbody>
+        <table><thead><tr><th>Campaign</th><th>Status</th><th>Window</th><th>Capacity</th><th>Workload</th><th>Controls</th></tr></thead>
+          <tbody>{rows.map((c) => {
+            const key = (status) => `${c._id}:${status}`;
+            return <tr key={c._id}>
+              <td><strong>{c.name}</strong><small className="table-subtext">{c.description || "Post-discharge outreach"}</small></td>
+              <td><Status value={c.status} /></td>
+              <td>{c.followUpDays} days</td>
+              <td>{c.outboundCapacity || "Hospital"}</td>
+              <td>{c.estimatedWorkload?.eligiblePatients ?? "—"}</td>
+              <td className="align-right controls-cell">
+                <button disabled={!!busy} onClick={() => estimate(c._id)}>Estimate</button>
+                <button disabled={!!busy} onClick={() => run(c._id)}>Eligibility</button>
+                {c.status === "DRAFT" && <button disabled={!!busy} onClick={() => action(c._id, "READY")}>Ready</button>}
+                {c.status === "READY" && <button disabled={!!busy} onClick={() => action(c._id, "RUNNING")}>Start</button>}
+                {c.status === "SCHEDULED" && <button disabled={!!busy} onClick={() => action(c._id, "RUNNING")}>Start</button>}
+                {c.status === "RUNNING" && <button disabled={!!busy} onClick={() => action(c._id, "PAUSED")}>Pause</button>}
+                {c.status === "PAUSED" && <button disabled={!!busy} onClick={() => action(c._id, "RUNNING")}>Resume</button>}
+              </td>
+            </tr>;
+          })}{!rows.length && <tr><td colSpan="6" className="empty">No campaigns found.</td></tr>}</tbody>
         </table>
       </section>
     </Layout>
@@ -436,6 +531,7 @@ function PatientDrawer({ row, detail, loading, onClose }) {
               <Detail label="AI status" value={<Status value={detail.task?.aiProcessingStatus} />} />
               <Detail label="Priority" value={detail.task?.priorityScore ?? 0} />
               <Detail label="Campaign" value={detail.campaign?.name || "—"} />
+              <Detail label="Deadline pressure" value={`${detail.priorityBreakdown?.hoursRemaining ?? "—"}h remaining`} />
             </div>
             <section className="drawer-section">
               <SectionTitle title="Patient information" />
@@ -444,6 +540,10 @@ function PatientDrawer({ row, detail, loading, onClose }) {
                 <div><span>Phone</span><b>{detail.patient?.phone || "—"}</b></div>
                 <div><span>Hospital</span><b>{detail.hospital?.name || "—"}</b></div>
               </div>
+            </section>
+            <section className="drawer-section">
+              <SectionTitle title="Outreach timeline" />
+              {detail.task?.outcomeHistory?.length ? detail.task.outcomeHistory.slice().reverse().map((h, i) => <div className="timeline-item" key={`${h.at || i}-${i}`}><Status value={h.status}/><span>{h.note || "Queue state transition"}</span><small>{h.at ? new Date(h.at).toLocaleString() : ""}</small></div>) : <p className="muted">No queue transitions recorded yet.</p>}
             </section>
             <section className="drawer-section">
               <SectionTitle title="EHR history" />
@@ -490,6 +590,44 @@ function Status({ value }) {
   return <span className={`status ${String(value || "unknown").toLowerCase()}`}>{clean}</span>;
 }
 
+function Simulation() {
+  const [data, setData] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try { setData((await api.get("/simulation/status")).data); }
+    catch (e) { setMsg(e.response?.data?.message || "Could not load simulation"); }
+  }
+  useEffect(() => { load(); const t = setInterval(load, 2000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    if (data?.run?.status !== "RUNNING") return;
+    const t = setInterval(() => api.post("/simulation/step").then(load).catch(() => {}), Math.max(1500, data.run.speedMs || 2500));
+    return () => clearInterval(t);
+  }, [data?.run?.status, data?.run?.speedMs]);
+
+  async function post(path) {
+    setBusy(true); setMsg("");
+    try { await api.post(`/simulation/${path}`); await load(); }
+    catch (e) { setMsg(e.response?.data?.message || "Simulation action failed"); }
+    finally { setBusy(false); }
+  }
+
+  const run = data?.run;
+  const tasks = data?.tasks || [];
+  return <Layout>
+    <div className="page-intro compact queue-head"><div><div className="eyebrow">MANDATORY PRD DEMONSTRATION</div><h2>Queue simulation</h2><p className="muted">The same seeded demo patients are reused here to demonstrate constrained capacity, deadline pressure, retries, callbacks, dropped calls and escalations without paid telephony.</p></div><div className="simulation-actions"><button onClick={() => post("reset")} disabled={busy}>Reset</button><button className="primary" onClick={() => post("start")} disabled={busy}>Start</button><button onClick={() => post("pause")} disabled={busy}>Pause</button><button onClick={() => post("step")} disabled={busy}>Step</button></div></div>
+    {msg && <div className="alert error">{msg}</div>}
+    <div className="metric-grid simulation-metrics">
+      <div className="metric-card"><span className="metric-label">Simulation</span><strong>{run?.status || "IDLE"}</strong><small>Tick {run?.tick ?? 0}</small></div>
+      <div className="metric-card"><span className="metric-label">Active capacity</span><strong>{data?.active ?? 0}</strong><small>Reserved / calling</small></div>
+      <div className="metric-card"><span className="metric-label">Total tasks</span><strong>{run?.totalTasks ?? tasks.length}</strong><small>Seeded demo tasks for this hospital</small></div>
+      <div className="metric-card"><span className="metric-label">Remaining</span><strong>{tasks.filter((x) => !["COMPLETED","ESCALATED","MANUAL_FOLLOW_UP","FAILED"].includes(x.status)).length}</strong><small>Work still in queue</small></div>
+    </div>
+    <section className="panel table-panel"><table><thead><tr><th>Patient</th><th>Risk</th><th>Scenario</th><th>Status</th><th>Priority</th><th>Attempt</th><th>Deadline</th></tr></thead><tbody>{tasks.map((x) => <tr key={x._id}><td><strong>{x.patientId?.name}</strong></td><td><Status value={x.patientId?.risk} /></td><td><span className="simulation-scenario">{x.simulation?.scenario}</span></td><td><Status value={x.status} /></td><td>{x.priorityScore}</td><td>{x.attempts}</td><td>{x.deadline ? new Date(x.deadline).toLocaleString() : "—"}</td></tr>)}</tbody></table></section>
+  </Layout>;
+}
+
 function Reviews() {
   const [rows, setRows] = useState([]);
   const [msg, setMsg] = useState("");
@@ -506,14 +644,14 @@ function Reviews() {
     return () => clearInterval(t);
   }, []);
 
+  async function reviewAction(id, action, body = {}) {
+    try { await api.post(`/reviews/${id}/${action}`, body); setMsg(`Escalation ${action.replaceAll("_", " ")} completed.`); load(); }
+    catch (e) { setMsg(e.response?.data?.message || `Could not ${action}`); }
+  }
   async function resolve(id) {
     const resolution = prompt("Reviewer resolution");
     if (!resolution) return;
-    try {
-      await api.post(`/reviews/${id}/resolve`, { resolution, updateEhr: true });
-      setMsg("Escalation resolved and EHR updated.");
-      load();
-    } catch (e) { setMsg(e.response?.data?.message || "Could not resolve"); }
+    await reviewAction(id, "resolve", { resolution, updateEhr: true });
   }
 
   return (
@@ -549,7 +687,7 @@ function Reviews() {
                     </div>
                   )) : <p className="muted">No AI assessment record yet.</p>}
                 </div>
-                {x.status !== "RESOLVED" && x.status !== "CLOSED" && <button onClick={() => resolve(x._id)}>Resolve + update EHR</button>}
+                {x.status !== "RESOLVED" && x.status !== "CLOSED" && <div className="review-actions"><button onClick={() => reviewAction(x._id, "acknowledge")}>Acknowledge</button><button onClick={() => reviewAction(x._id, "wait")}>Need information</button><button onClick={() => resolve(x._id)}>Resolve + update EHR</button></div>}
               </div>}
             </section>
           );
@@ -761,8 +899,11 @@ function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/patient/followup/:token" element={<PatientFollowup />} />
+      <Route path="/hospitals" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN]}><Hospitals /></ProtectedRoute>} />
+      <Route path="/knowledge" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN]}><Knowledge /></ProtectedRoute>} />
       <Route path="/campaigns" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN, ROLE.CAMPAIGN_MANAGER]}><Campaigns /></ProtectedRoute>} />
       <Route path="/queue" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN, ROLE.CAMPAIGN_MANAGER]}><Queue /></ProtectedRoute>} />
+      <Route path="/simulation" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN, ROLE.CAMPAIGN_MANAGER]}><Simulation /></ProtectedRoute>} />
       <Route path="/reviews" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN, ROLE.CLINICAL_REVIEWER]}><Reviews /></ProtectedRoute>} />
       <Route path="/" element={<ProtectedRoute roles={[ROLE.PLATFORM_ADMIN, ROLE.HOSPITAL_ADMIN, ROLE.CAMPAIGN_MANAGER]}><Dashboard /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
