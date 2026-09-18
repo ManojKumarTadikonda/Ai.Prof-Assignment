@@ -7,7 +7,7 @@ CareFlow AI is an enterprise-grade, multi-tenant clinical outreach and automated
 > [!IMPORTANT]
 > ### ⚠️ MANDATORY FIRST STEP: Seed Database Before Running Processes
 > **You MUST run `npm run seed` in the backend before executing any workflow or simulation processes.**
-> The seeder initializes all tenant hospitals, RBAC user accounts, clinical protocols, knowledge resources, running campaigns, and provisions **30 synthetic demo patients** (with FHIR-aligned encounters, active recovery conditions, and care plans) mapped across two real test email inboxes (`n210519@rguktn.ac.in` and `manojtadikonda5@gmail.com`).
+> The seeder initializes all tenant hospitals, RBAC user accounts, clinical protocols, knowledge resources, running campaigns, and provisions **30 synthetic demo patients** (with FHIR-aligned encounters, active recovery conditions, and care plans) mapped across two real test email inboxes (add your emails).
 > 
 > **Standard Execution Order:**
 > 1. `cd backend && npm run seed` *(Clears and initializes seed data)*
