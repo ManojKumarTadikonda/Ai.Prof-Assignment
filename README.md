@@ -4,54 +4,103 @@ CareFlow AI is an enterprise-grade, multi-tenant clinical outreach and automated
 
 ---
 
+> [!IMPORTANT]
+> ### ⚠️ MANDATORY FIRST STEP: Seed Database Before Running Processes
+> **You MUST run `npm run seed` in the backend before executing any workflow or simulation processes.**
+> The seeder initializes all tenant hospitals, RBAC user accounts, clinical protocols, knowledge resources, running campaigns, and provisions **30 synthetic demo patients** (with FHIR-aligned encounters, active recovery conditions, and care plans) mapped across two real test email inboxes (`n210519@rguktn.ac.in` and `manojtadikonda5@gmail.com`).
+> 
+> **Standard Execution Order:**
+> 1. `cd backend && npm run seed` *(Clears and initializes seed data)*
+> 2. `npm run dev` in backend & `npm run dev` in frontend
+> 3. Log into the Staff Portal using one of the pre-seeded demo accounts (Password: `demo123`)
+> 4. Run Campaign Operations: **Workload Estimate** $\to$ **Eligibility Run** (populates the prioritized queue)
+> 5. Process Outreach via **Outreach Queue** (live magic link emails) or test the deterministic **Queue Simulation**
+> 6. Complete patient responses $\to$ Observe dual-pass AI triage $\to$ Resolve clinical escalations $\to$ Verify EHR synchronization.
+
+---
+
 ## Table of Contents
 
-1. [Executive Summary & Problem Statement](#executive-summary--problem-statement)
-2. [Core Architecture Deep Dive](#core-architecture-deep-dive)
+1. [Pre-Seeded Roles & Demo Credentials](#pre-seeded-roles--demo-credentials)
+2. [Step-by-Step Operational Workflow](#step-by-step-operational-workflow)
+3. [Core Architecture Deep Dive](#core-architecture-deep-dive)
    - [High-Level System Architecture](#high-level-system-architecture)
-   - [Multi-Tenant Data Layer & Isolation](#multi-tenant-data-layer--isolation)
+   - [Multi-Tenant Data Layer & FHIR-Shaped Models](#multi-tenant-data-layer--fhir-shaped-models)
    - [Campaign Management & Dynamic Questionnaires](#campaign-management--dynamic-questionnaires)
    - [Prioritization Engine & Scoring Algorithm](#prioritization-engine--scoring-algorithm)
-   - [Outreach Dispatch & Queue Worker Engine](#outreach-dispatch--queue-worker-engine)
+   - [Outreach Dispatch & Queue State Machine](#outreach-dispatch--queue-state-machine)
    - [Zero-Auth Expiring Token Security Model](#zero-auth-expiring-token-security-model)
    - [Multimodal Voice & Text Patient Portal](#multimodal-voice--text-patient-portal)
    - [Dual-Pass AI Triage & Transcription Engine](#dual-pass-ai-triage--transcription-engine)
    - [Deterministic Safety Boundary & Consensus Engine](#deterministic-safety-boundary--consensus-engine)
    - [Human-in-the-Loop Clinical Review Workflow](#human-in-the-loop-clinical-review-workflow)
    - [Guarded EHR Synchronization & Audit Trail](#guarded-ehr-synchronization--audit-trail)
-3. [End-to-End Patient & Clinical Lifecycle](#end-to-end-patient--clinical-lifecycle)
-4. [Technology Stack](#technology-stack)
-5. [Database Models & Entity Relationships](#database-models--entity-relationships)
-6. [API Reference](#api-reference)
-7. [Installation & Local Setup](#installation--local-setup)
-8. [Environment Variables](#environment-variables)
-9. [Pre-Seeded Roles & Demo Accounts](#pre-seeded-roles--demo-accounts)
-10. [Synthetic Test Scenarios](#synthetic-test-scenarios)
-11. [Verification & Test Utilities](#verification--test-utilities)
+   - [Tenant-Aware Knowledge Base](#tenant-aware-knowledge-base)
+   - [Deterministic Queue Simulation](#deterministic-queue-simulation)
+4. [End-to-End Patient & Clinical Lifecycle](#end-to-end-patient--clinical-lifecycle)
+5. [Synthetic Demo Scenarios (30 Cases)](#synthetic-demo-scenarios-30-cases)
+6. [Technology Stack](#technology-stack)
+7. [Database Models & Entity Relationships](#database-models--entity-relationships)
+8. [API Reference](#api-reference)
+9. [Installation & Local Setup](#installation--local-setup)
+10. [Environment Variables](#environment-variables)
+11. [Verification, Testing & Safety Evaluation](#verification-testing--safety-evaluation)
 12. [Safety Guardrails & Regulatory Disclaimer](#safety-guardrails--regulatory-disclaimer)
 
 ---
 
-## Executive Summary & Problem Statement
+## Pre-Seeded Roles & Demo Accounts
 
-Preventable hospital readmissions and unmonitored post-discharge complications account for billions in healthcare costs annually. Traditional telephone follow-up workflows suffer from:
-- **Low Engagement & Capacity Constraints:** Clinical staff have limited hours to manually dial discharged patients.
-- **Data Incompleteness:** Unstructured notes and voicemail tags fail to capture critical clinical signals.
-- **Unsafe Automation Risks:** Unregulated LLM agents run the risk of hallucinating diagnoses, altering medication advice, or silently missing emergent symptoms.
+All seeded accounts share the default password: **`demo123`**
 
-**CareFlow AI resolves these challenges through a safety-first architecture:**
-- **Zero-Friction Outreach:** Patients receive secure, one-click expiring links via email to submit text or voice responses on any device without login fatigue.
-- **Strict Boundary AI:** Google Gemini is utilized exclusively for transcription and structured feature extraction under rigid JSON schemas and temperature `0`.
-- **Deterministic Hardcoded Protocols:** AI outputs are validated against hospital-defined clinical trigger keywords (e.g., *fever*, *worsening pain*, *breathing difficulty*, *bleeding*). Hardcoded rules always override AI classifications.
-- **Consensus & Human Review:** Ambiguous, conflicting, or urgent cases are immediately locked and routed to clinical staff for resolution before any EHR records are written.
+| Role | Email | Hospital Scope | Access Permissions & Responsibilities |
+| :--- | :--- | :--- | :--- |
+| **Platform Admin** | `platform@careflow.local` | **Global** (All Hospitals) | Full system-wide administration, tenant onboarding, cross-hospital campaign management, global queue oversight, clinical reviews, knowledge base, and immutable audit logs. |
+| **Hospital Admin** | `admin@hospital-a.local` | **Apollo Demo Hospital** (`HOSP-A`) | Full management for Hospital A: configure hospital settings (calling hours, capacity limits, retry backoff, escalation contacts), provision staff users, manage knowledge base resources, view campaigns and queue. |
+| **Campaign Manager** | `manager@hospital-a.local` | **Apollo Demo Hospital** (`HOSP-A`) | Campaign operations: lifecycle state control (`READY`, `RUNNING`, `PAUSED`), workload estimation, patient eligibility execution, queue dispatch, and deterministic queue simulation controls. |
+| **Clinical Reviewer** | `reviewer@hospital-a.local` | **Apollo Demo Hospital** (`HOSP-A`) | Clinical escalation portal: inspect patient clinical context, listen to raw voice recordings, review side-by-side Gemini AI assessments & triggered protocol safety rules, document resolutions, and commit approved summaries to EHR. |
+| **Hospital Admin (B)** | `admin@hospital-b.local` | **CityCare Demo Hospital** (`HOSP-B`) | CityCare tenant partition: demonstrates multi-tenant data isolation, independent protocol configurations, and partitioned patient queues. |
+
+---
+
+## Step-by-Step Operational Workflow
+
+To experience the complete platform lifecycle, follow this operational sequence:
+
+```mermaid
+flowchart TD
+    A[Step 1: Seed Database<br/>'npm run seed'] --> B[Step 2: Start Backend & Frontend<br/>Port 4000 & Port 5173]
+    B --> C[Step 3: Login as Campaign Manager<br/>manager@hospital-a.local / demo123]
+    C --> D[Step 4: Campaign Operations<br/>1. Workload Estimate<br/>2. Run Eligibility]
+    D --> E{Step 5: Choose Outreach Mode}
+    E -->|Mode A: Live Outreach & Magic Links| F[Outreach Queue -> 'Process Queue'<br/>Emails dispatched to test inboxes]
+    E -->|Mode B: Queue Simulation| G[Queue Simulation -> 'Reset' -> 'Start'<br/>Simulate capacity, retries & dropped calls]
+    F --> H[Step 6: Patient Completes Follow-Up<br/>Open magic link -> Voice / Text submission]
+    H --> I[Step 7: Dual-Pass AI Triage Pipeline<br/>Gemini Pass 1 + Gemini Pass 2 + Protocol Check]
+    I -->|Consensus: Routine & No Flags| J[Safe System Auto-Commit to EHR]
+    I -->|Consensus: Urgent / Concerning / Uncertain| K[Escalation Ticket Created]
+    K --> L[Step 8: Login as Clinical Reviewer<br/>reviewer@hospital-a.local / demo123]
+    L --> M[Clinical Review Portal -> Resolve & Update EHR]
+```
+
+1. **Seed Data First**: Run `npm run seed` in the `backend/` directory. This creates both hospitals, staff credentials, protocols, knowledge resources, active campaigns, and 30 synthetic demo patients.
+2. **Launch Applications**: Start the backend (`npm run dev` in `backend/`) and frontend (`npm run dev` in `frontend/`).
+3. **Authenticate**: Navigate to `http://localhost:5173/login` and sign in (e.g., `manager@hospital-a.local` / `demo123`).
+4. **Campaign Ingestion & Eligibility**:
+   - Navigate to the **Campaigns** tab (`/campaigns`).
+   - Click **Estimate** to calculate workload.
+   - Click **Eligibility** to evaluate discharged patients against the campaign window. This creates 24 prioritized outreach tasks for Hospital A.
+5. **Dispatch Outreach or Run Simulation**:
+   - **Live Outreach Flow**: Navigate to **Outreach Queue** (`/queue`) and click **Process Queue**. Magic links are dispatched via SendGrid (or logged to backend console). Open the magic link, answer questions via text or voice recording, and click **Submit follow-up**.
+   - **Simulation Flow**: Navigate to **Queue Simulation** (`/simulation`), click **Reset**, and click **Start** or **Step** to observe concurrent capacity management, retry backoff, callback handling, and automatic escalations in real-time.
+6. **Dual-Pass AI Triage**: When a patient submits a follow-up, Google Gemini 2.5 Flash executes a multimodal pass and an independent transcript pass. Results are evaluated against hardcoded hospital protocol rules.
+7. **Clinical Review & Resolution**: Cases flagged as `concerning`, `urgent`, or `uncertain` transition to `ESCALATED`. Sign in as `reviewer@hospital-a.local` (`/reviews`), inspect the side-by-side evidence, listen to the audio stream, and click **Resolve + update EHR**.
 
 ---
 
 ## Core Architecture Deep Dive
 
 ### High-Level System Architecture
-
-The following diagram illustrates the complete architectural topology of CareFlow AI:
 
 ```mermaid
 flowchart TB
@@ -122,32 +171,33 @@ flowchart TB
 
 ---
 
-### Multi-Tenant Data Layer & Isolation
+### Multi-Tenant Data Layer & FHIR-Shaped Models
 
-CareFlow AI is engineered from the ground up for multi-tenant hospital deployments:
-- **Tenant Scoping:** Every core document (`Patient`, `Campaign`, `Protocol`, `OutreachTask`, `PatientResponse`, `OutreachSession`, `AIAssessment`, `Escalation`, `EHRRecord`) contains an indexed `hospitalId`.
-- **Automatic Query Scoping:** The `tenantScope(req)` middleware extracts the authenticated user's tenant ID from verified JWT claims. Platform Admins retain global visibility, while Hospital Admins, Campaign Managers, and Clinical Reviewers are strictly scoped to their hospital data partition.
-- **Isolated Clinical Protocols:** Each hospital configures independent clinical triage guidelines, custom question sets, calling hours, and retry backoff policies.
+CareFlow AI is architected with strict multi-tenant isolation and standard healthcare data primitives:
+- **Tenant Scoping:** Every clinical document (`Patient`, `Encounter`, `Condition`, `Observation`, `Medication`, `CarePlan`, `Communication`, `Campaign`, `Protocol`, `OutreachTask`, `Escalation`, `EHRRecord`, `KnowledgeResource`) contains an indexed `hospitalId`.
+- **Automatic Query Scoping:** The `tenantScope(req)` middleware extracts the authenticated tenant ID from verified JWT claims. Global admins maintain oversight across all hospitals, while hospital-specific users are strictly scoped to their partition.
+- **FHIR-Shaped Entities:** Patient records include structured encounters, diagnoses/conditions, care plans, medications, observations, and communication records aligned with modern healthcare interoperability standards.
 
 ---
 
 ### Campaign Management & Dynamic Questionnaires
 
-Campaign Managers define post-discharge monitoring programs (e.g., *7-Day General Post-Discharge*, *Cardiac Surgery Follow-Up*, *Orthopedic Recovery*):
-- **Follow-Up Windows:** Configurable post-discharge eligibility windows (e.g., 7 days post-discharge).
-- **Dynamic Modular Questions:** Campaigns define ordered questions with supported response types (`TEXT`, `VOICE`) and requirement flags.
-- **Protocol Binding:** Campaigns are explicitly linked to a hospital-approved `Protocol` version containing deterministic safety rules.
+Campaign Managers define post-discharge monitoring programs (e.g., *General Post-Discharge Follow-Up*, *Cardiac Recovery*, *Orthopedic Care*):
+- **Lifecycle States:** `DRAFT` $\to$ `READY` $\to$ `SCHEDULED` $\to$ `RUNNING` $\to$ `PAUSED` $\to$ `COMPLETED` / `CANCELLED` / `FAILED`.
+- **Workload Estimation:** On-demand calculation of eligible patient counts and expected call/outreach attempts based on historical retry ratios.
+- **Configurable Questionnaires:** Dynamic questions supporting `TEXT` and `VOICE` response types with mandatory completion validation.
+- **Protocol Binding:** Campaigns bind to versioned hospital protocols containing deterministic safety triggers.
 
 ---
 
 ### Prioritization Engine & Scoring Algorithm
 
-To optimize hospital outreach capacity, the queue computes a dynamic priority score for every outreach task:
+To optimize clinical outreach capacity, the queue dynamically computes a composite priority score for every outreach task:
 
 $$\text{PriorityScore} = \text{RiskScore} + \text{DeadlineScore} + \text{CampaignPriority} + \text{RetryPenalty} + \text{CallbackBonus}$$
 
 Where:
-1. **Patient Risk Score ($\text{RiskScore}$):**
+1. **Patient Baseline Risk ($\text{RiskScore}$):**
    - $\text{Urgent} = 50$
    - $\text{Unknown} = 40$
    - $\text{Concerning} = 35$
@@ -157,49 +207,82 @@ Where:
    - Remaining time $< 12\text{ hours} \implies +35$
    - Remaining time $< 24\text{ hours} \implies +20$
    - Remaining time $\ge 24\text{ hours} \implies +10$
-3. **Campaign Weight:** Direct numeric priority assigned to the campaign (e.g., $+20$).
+3. **Campaign Weight:** Numeric priority score assigned to the campaign (e.g., $+20$).
 4. **Retry Pressure:** $\min(\text{attempts} \times 5, 10)$.
-5. **Callback Scheduled Bonus:** $+40$ if a callback time is requested.
+5. **Callback Bonus:** $+40$ when a patient or clinician schedules a specific callback time.
 
 ---
 
-### Outreach Dispatch & Queue Worker Engine
+### Outreach Dispatch & Queue State Machine
 
-The queue processing engine operates either on demand via REST endpoint (`POST /api/queue/process`) or autonomously via a scheduled `node-cron` background worker (`src/workers/queueWorker.js`):
-- **Outbound Capacity Throttling:** Respects each hospital's `outboundCapacity` (e.g., max 5 concurrent outreaches) minus currently active calling tasks.
-- **Batch Selection:** Fetches tasks in status `PENDING` or `RETRY_SCHEDULED` where `nextAttemptAt <= now`, sorted by `priorityScore DESC, createdAt ASC`.
-- **Automated Retry & Backoff:** If delivery fails, attempts are incremented. If attempts exceed `retry.maxAttempts` (default: 3), the task transitions to `MANUAL_FOLLOW_UP`. Otherwise, it is scheduled for retry with exponential/linear backoff (`retry.backoffMinutes`).
+The queue worker manages task lifecycles with atomic concurrency leasing and automatic recovery:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING : Eligibility Run
+    PENDING --> CALLING : Lease Acquired & Dispatched
+    CALLING --> CONNECTED : Patient Opens Link
+    CALLING --> NO_ANSWER : Delivery / Dial Failed
+    CALLING --> BUSY : Recipient Busy
+    CALLING --> VOICEMAIL : Voicemail Reached
+    CALLING --> DROPPED : Call / Network Dropped
+    
+    NO_ANSWER --> RETRY_SCHEDULED : Attempts < Max
+    BUSY --> RETRY_SCHEDULED : Attempts < Max
+    VOICEMAIL --> RETRY_SCHEDULED : Attempts < Max
+    DROPPED --> RETRY_SCHEDULED : Attempts < Max
+    
+    RETRY_SCHEDULED --> CALLING : Backoff Elapsed
+    
+    NO_ANSWER --> MANUAL_FOLLOW_UP : Attempts >= Max
+    BUSY --> MANUAL_FOLLOW_UP : Attempts >= Max
+    
+    CONNECTED --> CALLBACK_SCHEDULED : Callback Requested
+    CALLBACK_SCHEDULED --> CALLING : Callback Time Reached
+    
+    CONNECTED --> AI_PROCESSING : Answers Submitted
+    AI_PROCESSING --> COMPLETED : Routine Consensus
+    AI_PROCESSING --> ESCALATED : Trigger / Conflict / Urgent
+    
+    ESCALATED --> COMPLETED : Clinician Resolves & Updates EHR
+    COMPLETED --> [*]
+    MANUAL_FOLLOW_UP --> [*]
+```
+
+- **Atomic Outbound Capacity:** Enforces hospital-level concurrency limits (`outboundCapacity`) using atomic Mongo find-and-modify lease reservations.
+- **Exponential / Linear Backoff:** Automatically reschedules failed attempts (`backoffMinutes`) up to `maxAttempts` (default: 3).
+- **Stale Lease Recovery:** Background workers automatically release expired locks from crashed or disconnected tasks.
 
 ---
 
 ### Zero-Auth Expiring Token Security Model
 
-To ensure seamless patient accessibility without compromising security:
+To ensure friction-free patient engagement without password fatigue:
 1. When outreach is dispatched, the system generates a cryptographically secure 64-character hex token via `crypto.randomBytes(32)`.
 2. The raw token is sent to the patient's verified email address within a magic link:
-   `https://<app-domain>/patient/followup/<rawToken>`
+   `http://localhost:5173/patient/followup/<rawToken>`
 3. The database stores only the SHA-256 hash (`tokenHash = crypto.createHash("sha256").update(token).digest("hex")`) with a 72-hour expiration timestamp.
 4. When accessed, the patient portal authenticates exclusively via the token hash.
-5. Once submitted, the session is marked `used: true` and locked against future modifications.
+5. Upon submission, the session is marked `used: true` and locked against any further modifications.
 
 ---
 
 ### Multimodal Voice & Text Patient Portal
 
-The patient follow-up web portal supports responsive text input and in-browser voice recording:
-- **Audio Capture:** Utilizes the HTML5 `navigator.mediaDevices.getUserMedia` and `MediaRecorder` API (supporting `audio/webm;codecs=opus`, `audio/webm`, `audio/mp4`).
-- **Incremental Auto-Saving:** As the patient completes each question (by text or voice), responses are sent via `multipart/form-data` to `POST /api/patient/outreach/:token/response`.
+The responsive patient follow-up portal supports both text responses and in-browser voice recordings:
+- **Audio Recording:** Captures high-fidelity audio via the HTML5 `navigator.mediaDevices.getUserMedia` and `MediaRecorder` API (`audio/webm;codecs=opus`, `audio/webm`, `audio/mp4`).
+- **Incremental Auto-Saving:** As the patient completes each question (via text or voice), answers are auto-saved via `multipart/form-data` to `POST /api/patient/outreach/:token/response`.
 - **Private Audio Storage:**
-  - *Cloudinary Mode:* Audio is uploaded as private/authenticated video/audio assets under folder `careflow/<hospitalId>/<patientId>/<taskId>/`.
-  - *Local Fallback Mode:* Audio is stored on local disk under `uploads/` for offline/development environments.
-  - *Secure Playback:* Audio is never exposed through public URLs; playback is proxied through token-authenticated backend streams (`GET /api/patient/outreach/:token/response/:questionId/audio`).
-- **Completeness Enforcement:** The patient cannot submit the questionnaire until all required campaign questions have an associated response.
+  - *Cloudinary Mode:* Audio is uploaded as private/authenticated media assets under `careflow/<hospitalId>/<patientId>/<taskId>/`.
+  - *Local Fallback Mode:* Audio is stored locally in `uploads/` for offline and air-gapped development environments.
+  - *Secure Audio Proxy:* Audio files are never exposed publicly; playback is securely streamed through token-authenticated backend endpoints (`GET /api/patient/outreach/:token/response/:questionId/audio`).
+- **Completeness Verification:** The portal requires all mandatory campaign questions to have an answer before unlocking final submission.
 
 ---
 
 ### Dual-Pass AI Triage & Transcription Engine
 
-CareFlow AI implements a resilient, multi-stage AI triage pipeline powered by `@google/genai` (Google Gemini 2.5 Flash):
+CareFlow AI implements a dual-pass AI assessment architecture powered by Google Gemini 2.5 Flash:
 
 ```mermaid
 sequenceDiagram
@@ -214,28 +297,28 @@ sequenceDiagram
 
     Patient->>API: POST /api/patient/outreach/:token/submit
     API->>DB: Mark Session Used, OutreachTask.aiProcessingStatus = "PROCESSING"
-    API-->>Patient: HTTP 202 Accepted (Background Processing)
+    API-->>Patient: HTTP 202 Accepted (Processing in Background)
     
     API->>Worker: processSubmittedFollowup(session, campaign, responses)
-    Worker->>Cloudinary: Download all patient voice responses
+    Worker->>Cloudinary: Download patient voice responses
     Worker->>Gemini: Upload audio files via ai.files.upload()
     
     Note over Worker,Gemini: Assessment #1 (Multimodal Pass)
-    Worker->>Gemini: generateContent(All Audios + Text + Protocol + JSON Schema)
+    Worker->>Gemini: generateContent(Audio Files + Text Answers + Protocol + JSON Schema)
     Gemini-->>Worker: Assessment 1: Transcripts, Language, Classification, Evidence, Uncertainty
     
-    Worker->>DB: Save generated transcripts to PatientResponse records
+    Worker->>DB: Save verbatim transcripts to PatientResponse records
     
-    Note over Worker,Gemini: Assessment #2 (Independent Pure-Transcript Pass)
+    Note over Worker,Gemini: Assessment #2 (Independent Transcript-Only Pass)
     Worker->>Gemini: generateContent(Transcripts + Questions + Protocol + JSON Schema)
     Gemini-->>Worker: Assessment 2: Independent Classification, Evidence, Uncertainty
     
     Worker->>Safety: Validate JSON Schemas (Pass 1 & Pass 2)
-    Worker->>Safety: Run protocolCheck(Keyword triggers vs Hospital Rules)
+    Worker->>Safety: Run protocolCheck(Deterministic triggers vs Hospital Protocol)
     Worker->>Safety: Run consensus(Assessments 1 & 2)
     
     alt Consensus = ROUTINE & No Protocol Triggers
-        Safety->>DB: safeRoutineEHRUpdate() -> EHRRecord created
+        Safety->>DB: safeRoutineEHRUpdate() -> EHRRecord created (Source: SYSTEM)
         Safety->>DB: OutreachTask.status = "COMPLETED"
     else Consensus = CONCERNING / URGENT / UNCERTAIN / Protocol Trigger Match
         Safety->>DB: Create Escalation record (Status: OPEN)
@@ -246,58 +329,74 @@ sequenceDiagram
 ```
 
 #### Dual-Pass AI Mechanics:
-1. **Pass 1 (Multimodal Voice & Text Intake):**
-   - Downloads all voice responses from secure storage into temporary worker buffers.
-   - Uploads audio files to the Gemini Files API (`ai.files.upload`).
-   - Dispatches a single combined request to Gemini containing audio URIs, text answers, hospital protocol text, and a rigid JSON schema (`patientAssessmentSchema`).
-   - Generates exact verbatim transcripts for each question along with the primary clinical triage assessment.
-   - Cleans up temporary audio files and deletes uploaded Gemini file references.
+1. **Pass 1 (Multimodal Audio & Text Intake):**
+   - Downloads recorded voice responses into memory buffers.
+   - Uploads audio files to Google Gemini Files API (`ai.files.upload`).
+   - Dispatches a single structured prompt with audio URIs, text answers, hospital protocol text, and a rigid JSON schema.
+   - Extracts exact verbatim transcripts for each question along with the primary clinical assessment.
+   - Deletes uploaded Gemini file references immediately upon completion.
 2. **Pass 2 (Independent Transcript-Only Intake):**
-   - Transcripts extracted in Pass 1 are formatted as pure text question-answer pairs.
-   - Dispatches a second independent evaluation to Gemini (`assessPatientTranscripts`).
-   - Gemini evaluates the pure text transcripts against the hospital protocol without bias from prior audio token embeddings.
+   - Transcripts extracted in Pass 1 are evaluated against the hospital protocol in an independent second call.
+   - Evaluates text without acoustic bias to cross-validate clinical findings.
 3. **Resilience & Rate-Limit Handling:**
-   - Both AI calls use `generateWithRetry` with exponential backoff handling HTTP 429 and transient 5xx errors.
-   - If Gemini is unavailable, the system generates a safe fallback response with `classification: "uncertain"`, `requires_human_review: true`, and `ai_status: "PROVIDER_UNAVAILABLE"`.
+   - Both AI calls use exponential retry logic to handle transient 429 rate limits or 5xx errors.
+   - If the AI provider is unavailable, the pipeline falls back gracefully to `classification: "uncertain"`, `requires_human_review: true`, and flags the case for human clinician review.
 
 ---
 
 ### Deterministic Safety Boundary & Consensus Engine
 
-Gemini **never** has direct write access to the database or EHR records. All AI results must pass through deterministic code validations in `src/services/validation.js`:
+Google Gemini **never** has direct write access to the database or EHR records. All AI outputs pass through deterministic validations in `src/services/validation.js`:
 
 1. **Schema Validation (`validateAIOutput`):**
-   - Verifies valid classification enum (`routine`, `concerning`, `urgent`, `uncertain`).
-   - Verifies presence of evidence array, uncertainty rating (`low`, `medium`, `high`), and boolean `requires_human_review`.
+   - Enforces strict classification enums (`routine`, `concerning`, `urgent`, `uncertain`).
+   - Verifies the presence of evidence arrays, uncertainty ratings (`low`, `medium`, `high`), and `requires_human_review` flags.
 2. **Deterministic Protocol Scanner (`protocolCheck`):**
-   - Scans all patient transcripts against hospital protocol trigger keywords (e.g., *worsening pain*, *fever*, *difficulty breathing*, *severe bleeding*, *fainting*).
-   - If an urgent or review-requiring trigger is matched, the system **forces** `requiresHumanReview = true` and overrides the classification, regardless of AI output.
-   - If AI classification conflicts with a hospital protocol trigger, human review is forcefully triggered.
+   - Scans verbatim transcripts and text answers for hospital trigger keywords (e.g., *worsening pain*, *fever*, *difficulty breathing*, *severe bleeding*, *fainting*).
+   - If an urgent or review-requiring trigger is matched, the system **forces** `requiresHumanReview = true` and overrides the AI classification. Hardcoded safety rules always supersede AI predictions.
 3. **Consensus Engine (`consensus`):**
    - Aggregates Pass 1 and Pass 2 assessments.
-   - If assessments disagree (tie), the classification is set to `uncertain` and human review is mandated.
-   - If any single assessment requires human review, or if the final consensus classification is `urgent` or `uncertain`, clinical review is mandated.
+   - If assessments disagree, the consensus classification is set to `uncertain` and human review is mandated.
+   - If any single assessment requires human review, or if the final consensus classification is `urgent` or `uncertain`, clinical review is enforced.
 
 ---
 
 ### Human-in-the-Loop Clinical Review Workflow
 
 When an outreach task is flagged for human review:
-- An `Escalation` record is created with priority matching the highest risk level (`urgent`, `concerning`, `uncertain`).
+- An `Escalation` ticket is created with priority matching the highest risk level (`urgent`, `concerning`, `uncertain`).
 - The task status transitions to `ESCALATED` with `aiProcessingStatus = "HUMAN_REVIEW"`.
 - Hospital clinicians access the **Clinical Review Portal** (`/reviews`), where they can:
-  - Inspect full patient encounter details, historical EHR notes, and question responses.
-  - Listen to original audio recordings.
+  - Inspect full patient encounter history, conditions, and care plan details.
+  - Listen to original voice recordings.
   - Review side-by-side Gemini assessments, extracted evidence, uncertainty ratings, and triggered protocol rules.
-  - Enter a formal clinical resolution note and submit (`POST /api/reviews/:id/resolve`), which updates the escalation, closes the task, and commits an encounter summary to the EHR.
+  - Enter a formal clinical resolution note and submit (`POST /api/reviews/:id/resolve`), which closes the escalation ticket and commits an authenticated encounter summary to the EHR.
 
 ---
 
 ### Guarded EHR Synchronization & Audit Trail
 
 - **Automated Path (`safeRoutineEHRUpdate`):** Only uncontested, verified `ROUTINE` follow-ups with zero safety flags or uncertainty write directly to the `EHRRecord` collection with `source: "post_discharge_outreach"` and `updatedBy: "SYSTEM"`.
-- **Clinician Path:** Escalated cases write to `EHRRecord` only after authenticated clinical review with `source: "clinical_review"` and `updatedBy: "<User_ID>"`.
+- **Clinician Path:** Escalated cases write to `EHRRecord` only after authenticated clinical review with `source: "clinical_review"` and `updatedBy: "<Clinician_User_ID>"`.
 - **Immutable Audit Logging (`AuditLog`):** Every key system transition (`OUTREACH_SENT`, `FOLLOWUP_SUBMITTED`, `AI_ASSESSMENT_COMPLETED`, `ESCALATION_CREATED`, `ESCALATION_RESOLVED`, `EHR_UPDATE`) logs actor identity, timestamp, entity references, and metadata.
+
+---
+
+### Tenant-Aware Knowledge Base
+
+CareFlow AI includes a hospital-scoped knowledge management module (`/knowledge`):
+- Hospital Admins can upload hospital-approved post-discharge guidance, surgical recovery protocols, and safety standards.
+- Grounding context is retrieved alongside the active protocol during AI evaluation, complete with provenance tags and source references.
+
+---
+
+### Deterministic Queue Simulation
+
+For testing and demonstration without paid outbound telephony:
+- Accessible at `/simulation` for Hospital Admins and Campaign Managers.
+- Reuses the 24 seeded demo patients from Hospital A.
+- Models outbound capacity limits, retry backoff intervals, busy signals, voicemails, dropped calls, callback requests, and clinical escalations.
+- Controls: **Reset** (reloads seeded tasks), **Start** (runs simulation loop), **Pause**, and **Step** (advances single queue cycle).
 
 ---
 
@@ -342,21 +441,60 @@ stateDiagram-v2
 
 ---
 
+## Synthetic Demo Scenarios (30 Cases)
+
+The database seeder (`backend/src/seed.js`) provisions 30 distinct synthetic patient scenarios (24 in Hospital A, 6 in Hospital B) mapped to two real test inboxes:
+
+| ID | External ID | Scenario Key | Baseline Risk | Simulated Workflow Outcome |
+| :---: | :--- | :--- | :---: | :--- |
+| 1 | `HOSP-A-P001` | `routine-01` | `routine` | Direct completion $\to$ Automated EHR write. |
+| 2 | `HOSP-A-P002` | `routine-02` | `routine` | No-answer retry $\to$ Completed on attempt 2. |
+| 3 | `HOSP-A-P003` | `routine-03` | `routine` | Busy signal $\to$ Backoff retry $\to$ Completed. |
+| 4 | `HOSP-A-P004` | `routine-04` | `routine` | Voicemail $\to$ Backoff retry $\to$ Completed. |
+| 5 | `HOSP-A-P005` | `routine-05` | `routine` | Dropped call $\to$ Immediate retry $\to$ Completed. |
+| 6 | `HOSP-A-P006` | `routine-06` | `routine` | Callback requested $\to$ High priority boost $\to$ Completed. |
+| 7 | `HOSP-A-P007` | `concerning-01` | `concerning` | Worsening pain reported $\to$ Escalated for clinical review. |
+| 8 | `HOSP-A-P008` | `concerning-02` | `concerning` | Retry $\to$ Fever reported $\to$ Escalated for clinical review. |
+| 9 | `HOSP-A-P009` | `concerning-03` | `concerning` | Mild symptoms resolving $\to$ Completed. |
+| 10 | `HOSP-A-P010` | `concerning-04` | `concerning` | Busy signal $\to$ Retry $\to$ Routine completion. |
+| 11 | `HOSP-A-P011` | `urgent-01` | `urgent` | Difficulty breathing reported $\to$ High-priority urgent escalation. |
+| 12 | `HOSP-A-P012` | `urgent-02` | `urgent` | Severe bleeding reported $\to$ High-priority urgent escalation. |
+| 13 | `HOSP-A-P013` | `urgent-03` | `urgent` | Dropped connection $\to$ Reconnect $\to$ Urgent escalation. |
+| 14 | `HOSP-A-P014` | `urgent-04` | `urgent` | False alarm resolved $\to$ Completed. |
+| 15 | `HOSP-A-P015` | `unknown-01` | `unknown` | Vague / ambiguous answers $\to$ AI uncertainty $\to$ Human review. |
+| 16 | `HOSP-A-P016` | `unknown-02` | `unknown` | 3 consecutive unreachables $\to$ `MANUAL_FOLLOW_UP`. |
+| 17 | `HOSP-A-P017` | `deadline-01` | `concerning` | Window nearing expiration ($< 6\text{h}$) $\to$ Priority boost $\to$ Completed. |
+| 18 | `HOSP-A-P018` | `deadline-02` | `routine` | Window nearing expiration $\to$ Busy $\to$ Voicemail $\to$ Completed. |
+| 19 | `HOSP-A-P019` | `deadline-03` | `urgent` | Window expiring $\to$ Urgent symptoms $\to$ Immediate escalation. |
+| 20 | `HOSP-A-P020` | `callback-01` | `routine` | Patient requested callback $\to$ Priority boost $\to$ Completed. |
+| 21 | `HOSP-A-P021` | `callback-02` | `concerning` | Callback requested $\to$ Symptom check $\to$ Escalated. |
+| 22 | `HOSP-A-P022` | `dropped-01` | `routine` | Dropped connection $\to$ Exponential backoff $\to$ Completed. |
+| 23 | `HOSP-A-P023` | `retry-limit-01` | `routine` | Exceeds max retry attempts $\to$ Transitions to `MANUAL_FOLLOW_UP`. |
+| 24 | `HOSP-A-P024` | `retry-limit-02` | `concerning` | Exceeds max retry attempts $\to$ Transitions to `MANUAL_FOLLOW_UP`. |
+| 25 | `HOSP-B-P025` | `routine-07` | `routine` | **Hospital B**: Routine post-discharge completion (Tenant isolation). |
+| 26 | `HOSP-B-P026` | `routine-08` | `routine` | **Hospital B**: Retry $\to$ Routine completion. |
+| 27 | `HOSP-B-P027` | `concerning-05`| `concerning` | **Hospital B**: Concerning symptom $\to$ Hospital B clinical review. |
+| 28 | `HOSP-B-P028` | `urgent-05` | `urgent` | **Hospital B**: Urgent trigger $\to$ Hospital B escalation. |
+| 29 | `HOSP-B-P029` | `routine-09` | `routine` | **Hospital B**: Voicemail $\to$ Routine completion. |
+| 30 | `HOSP-B-P030` | `deadline-04` | `concerning` | **Hospital B**: Deadline pressure $\to$ Completed. |
+
+---
+
 ## Technology Stack
 
-| Layer | Technology | Description |
+| Layer | Technology | Purpose |
 | :--- | :--- | :--- |
 | **Backend Runtime** | Node.js (v18+) | ES Module architecture (`"type": "module"`) |
-| **Web Framework** | Express.js 4.x | RESTful API routing, centralized error handling |
-| **Persistence** | MongoDB & Mongoose 8.x | Multi-tenant schema definitions, indexes, timestamps |
-| **AI / LLM Engine** | `@google/genai` | Google Gemini 2.5 Flash / 1.5 Flash (temperature 0, structured JSON schemas, Files API) |
+| **Web Framework** | Express.js 4.x | RESTful API gateway, tenant middleware, error handling |
+| **Persistence** | MongoDB & Mongoose 8.x | Multi-tenant collections, indexes, and atomic updates |
+| **AI / LLM Engine** | `@google/genai` | Google Gemini 2.5 Flash / 1.5 Flash (temperature 0, structured JSON schema, Files API) |
 | **Media Storage** | Cloudinary SDK / Local FS | Authenticated audio storage, streaming audio proxy |
 | **Email Delivery** | `@sendgrid/mail` | Transactional email delivery with HTML fallback links |
-| **Security & Auth** | `jsonwebtoken`, `bcryptjs`, `crypto` | JWT bearer authentication, bcrypt password hashing, SHA-256 token hashing |
-| **Scheduling** | `node-cron` | Asynchronous periodic queue processing and retry handling |
+| **Security & Auth** | `jsonwebtoken`, `bcryptjs`, `crypto` | JWT authentication, bcrypt password hashing, SHA-256 token hashing |
+| **Scheduling** | `node-cron` | Asynchronous periodic queue processing and retry workers |
 | **Frontend Framework**| React 18 & Vite | Single Page Application (SPA), React Router v6 |
-| **Audio Processing** | Web Audio API / MediaRecorder | Browser-native audio capture and Opus/WebM/MP4 packaging |
-| **UI Styling** | Vanilla CSS Design System | Custom dark/light clinical theme, glassmorphic accents, responsive grid/flexbox layouts |
+| **Audio Processing** | Web Audio API / MediaRecorder | Browser-native audio capture and Opus/WebM packaging |
+| **UI Styling** | Vanilla CSS Design System | Custom dark/light clinical theme, glassmorphic accents, responsive layouts |
 
 ---
 
@@ -367,6 +505,7 @@ erDiagram
     Hospital ||--o{ User : employs
     Hospital ||--o{ Patient : admits
     Hospital ||--o{ Protocol : configures
+    Hospital ||--o{ KnowledgeResource : stores
     Hospital ||--o{ Campaign : creates
     Hospital ||--o{ OutreachTask : processes
     Hospital ||--o{ OutreachSession : generates
@@ -376,6 +515,9 @@ erDiagram
     Campaign ||--|| Protocol : references
     Campaign ||--o{ OutreachTask : targets
 
+    Patient ||--o{ Encounter : has
+    Patient ||--o{ Condition : diagnosed
+    Patient ||--o{ CarePlan : assigned
     Patient ||--o{ OutreachTask : assigned
     Patient ||--o{ PatientResponse : provides
     Patient ||--o{ OutreachSession : receives
@@ -393,18 +535,25 @@ erDiagram
 
 | Model | Key Fields | Description |
 | :--- | :--- | :--- |
-| **`Hospital`** | `name`, `code`, `timezone`, `callingHours`, `outboundCapacity`, `retry` | Hospital entity with tenant configuration and rate limits. |
-| **`User`** | `hospitalId`, `name`, `email`, `passwordHash`, `role`, `active` | System user with RBAC (`PLATFORM_ADMIN`, `HOSPITAL_ADMIN`, `CAMPAIGN_MANAGER`, `CLINICAL_REVIEWER`). |
-| **`Patient`** | `hospitalId`, `externalId`, `name`, `email`, `phone`, `dischargeDate`, `risk`, `communicationConsent` | Discharged patient record with communication flags and baseline risk. |
+| **`Hospital`** | `name`, `code`, `timezone`, `callingHours`, `outboundCapacity`, `retry`, `escalationContacts` | Hospital tenant configuration, capacity limits, and retry policies. |
+| **`User`** | `hospitalId`, `name`, `email`, `passwordHash`, `role`, `active` | Staff user with RBAC (`PLATFORM_ADMIN`, `HOSPITAL_ADMIN`, `CAMPAIGN_MANAGER`, `CLINICAL_REVIEWER`). |
+| **`Patient`** | `hospitalId`, `externalId`, `name`, `email`, `phone`, `dischargeDate`, `risk`, `communicationConsent` | Discharged patient master record with communication consent flags. |
+| **`Encounter`** | `hospitalId`, `patientId`, `externalId`, `careSetting`, `admissionAt`, `dischargeAt`, `status` | FHIR-shaped inpatient admission and discharge encounter. |
+| **`Condition`** | `hospitalId`, `patientId`, `encounterId`, `code`, `display`, `clinicalStatus` | FHIR-shaped clinical condition / diagnosis during hospitalization. |
+| **`CarePlan`** | `hospitalId`, `patientId`, `encounterId`, `title`, `instructions`, `followUpWindowDays` | FHIR-shaped discharge care plan and follow-up guidance. |
 | **`Protocol`** | `hospitalId`, `name`, `version`, `rules` (`trigger`, `classification`, `requiresHumanReview`, `reason`), `sourceText` | Clinical protocol rules and keyword triggers. |
-| **`Campaign`** | `hospitalId`, `name`, `status`, `priority`, `followUpDays`, `protocolId`, `questions` | Outreach campaign configuration and questionnaire definitions. |
-| **`OutreachTask`**| `hospitalId`, `patientId`, `campaignId`, `status`, `aiProcessingStatus`, `priorityScore`, `attempts`, `deadline` | Core queue work item tracking delivery, retry lifecycle, and AI status. |
-| **`PatientResponse`**| `outreachTaskId`, `questionId`, `responseType`, `text`, `audio` (`assetId`, `secureUrl`, `duration`), `transcript` | Individual answer per question, including audio metadata and transcript. |
-| **`OutreachSession`** | `hospitalId`, `patientId`, `outreachTaskId`, `tokenHash`, `expiresAt`, `submittedAt`, `used` | One-time expiring security token for patient portal access. |
+| **`KnowledgeResource`** | `hospitalId`, `title`, `type`, `content`, `sourceReference`, `tags` | Tenant-specific clinical knowledge for AI grounding. |
+| **`Campaign`** | `hospitalId`, `name`, `status`, `priority`, `followUpDays`, `protocolId`, `questions` | Outreach program configuration and dynamic questionnaire definitions. |
+| **`OutreachTask`** | `hospitalId`, `patientId`, `campaignId`, `status`, `aiProcessingStatus`, `priorityScore`, `attempts`, `deadline`, `outcomeHistory` | Queue item tracking delivery state machine, retry lifecycle, and AI status. |
+| **`PatientResponse`** | `outreachTaskId`, `questionId`, `responseType`, `text`, `audio`, `transcript` | Individual answer per question, including audio metadata and transcripts. |
+| **`OutreachSession`** | `hospitalId`, `patientId`, `outreachTaskId`, `tokenHash`, `expiresAt`, `submittedAt`, `used` | One-time expiring security token for zero-auth patient portal access. |
 | **`AIAssessment`** | `outreachTaskId`, `assessmentNo`, `classification`, `evidence`, `uncertainty`, `requiresHumanReview`, `safetyFlags` | Output of each Gemini assessment pass. |
 | **`Escalation`** | `hospitalId`, `patientId`, `outreachTaskId`, `status`, `reason`, `priority`, `assignedTo`, `resolution` | Clinical review ticket for cases requiring human intervention. |
 | **`EHRRecord`** | `hospitalId`, `patientId`, `encounterId`, `followUpStatus`, `summary`, `source`, `updatedBy` | Mock EHR encounter entry. |
 | **`AuditLog`** | `hospitalId`, `actorType`, `actorId`, `action`, `entityType`, `entityId`, `details` | Immutable system and user activity log. |
+| **`WorkflowEvent`** | `hospitalId`, `type`, `entityType`, `entityId`, `idempotencyKey`, `status`, `attempts`, `payload` | Idempotent background workflow events. |
+| **`Notification`** | `hospitalId`, `type`, `recipient`, `subject`, `message`, `status` | Staff alert notifications for escalations and failures. |
+| **`SimulationRun`** | `hospitalId`, `status`, `tick`, `speedMs`, `totalTasks` | State of the deterministic queue simulation runner. |
 
 ---
 
@@ -416,33 +565,51 @@ erDiagram
 ### 2. Hospital Operations (`/api/hospitals`)
 - `GET /api/hospitals`: List hospitals (tenant-scoped).
 - `POST /api/hospitals`: Register new hospital (`PLATFORM_ADMIN`).
+- `PATCH /api/hospitals/:id/config`: Update hospital calling hours, capacity, and retry parameters.
+- `GET /api/hospitals/:id/users`: List users assigned to a hospital.
+- `POST /api/hospitals/:id/users`: Provision and assign a new user to a hospital.
 
 ### 3. Patient Ingestion (`/api/patients`)
-- `GET /api/patients`: List patients for hospital.
-- `POST /api/patients`: Create or import discharged patient.
+- `GET /api/patients`: List patients for the authenticated hospital.
+- `POST /api/patients`: Ingest a new discharged patient record.
 
-### 4. Outreach Campaigns (`/api/campaigns`)
-- `GET /api/campaigns`: List all active campaigns.
-- `POST /api/campaigns`: Create campaign with custom question definitions.
-- `POST /api/campaigns/:id/eligibility/run`: Evaluate discharged patients against campaign follow-up window and enqueue new outreach tasks.
+### 4. Knowledge Management (`/api/knowledge`)
+- `GET /api/knowledge`: List tenant-specific knowledge resources.
+- `POST /api/knowledge`: Add hospital-approved clinical guideline for AI grounding.
 
-### 5. Outreach Queue (`/api/queue`)
+### 5. Outreach Campaigns (`/api/campaigns`)
+- `GET /api/campaigns`: List active and draft campaigns.
+- `POST /api/campaigns`: Create campaign with dynamic questions.
+- `POST /api/campaigns/:id/transition`: Transition campaign state (`READY`, `RUNNING`, `PAUSED`, `COMPLETED`).
+- `POST /api/campaigns/:id/workload/estimate`: Calculate eligible patients and expected call attempts.
+- `POST /api/campaigns/:id/eligibility/run`: Evaluate discharged patients against campaign follow-up window and enqueue outreach tasks.
+
+### 6. Outreach Queue (`/api/queue`)
 - `GET /api/queue`: List prioritized outreach tasks with latest AI assessment summaries.
-- `GET /api/queue/:id/detail`: Fetch full patient 360° view (task, responses, audio links, EHR history, AI assessments).
-- `POST /api/queue/process`: Process queue immediately within hospital outbound capacity.
+- `GET /api/queue/:id/detail`: Fetch complete patient 360° record (task history, responses, audio streams, EHR, AI assessments).
+- `POST /api/queue/process`: Process queue immediately within hospital outbound capacity limits.
 
-### 6. Public Patient Portal (`/api/patient`)
+### 7. Public Patient Portal (`/api/patient`)
 - `GET /api/patient/outreach/:token`: Retrieve campaign questions and previous answers using the secure token.
 - `GET /api/patient/outreach/:token/response/:questionId/audio`: Authenticated media stream for previously recorded patient voice answers.
 - `POST /api/patient/outreach/:token/response`: Save incremental answer (multipart form data with text or audio file).
 - `POST /api/patient/outreach/:token/submit`: Complete and lock questionnaire; triggers asynchronous background AI processing pipeline.
 
-### 7. Clinical Review & Escalations (`/api/reviews`)
+### 8. Clinical Review & Escalations (`/api/reviews`)
 - `GET /api/reviews`: List open clinical escalations.
+- `POST /api/reviews/:id/acknowledge`: Acknowledge and assign escalation to reviewer.
+- `POST /api/reviews/:id/wait`: Set escalation status to waiting for information.
 - `POST /api/reviews/:id/resolve`: Resolve escalation, assign clinician, and commit encounter summary to EHR.
 
-### 8. Analytics & Monitoring (`/api/dashboard`)
-- `GET /api/dashboard/summary`: Operational metrics (total patients, pending tasks, AI processing count, open escalations, EHR commits).
+### 9. Queue Simulation (`/api/simulation`)
+- `GET /api/simulation/status`: Get current simulation runner status, tick count, and task states.
+- `POST /api/simulation/reset`: Reset simulation using the seeded demo tasks.
+- `POST /api/simulation/start`: Start continuous simulation ticks.
+- `POST /api/simulation/pause`: Pause simulation.
+- `POST /api/simulation/step`: Advance simulation by one discrete cycle.
+
+### 10. Operations Dashboard (`/api/dashboard`)
+- `GET /api/dashboard/summary`: Operational metrics (total patients, pending tasks, AI processing count, open escalations, EHR commits, capacity).
 
 ---
 
@@ -450,24 +617,28 @@ erDiagram
 
 ### Prerequisites
 - **Node.js**: v18.0.0 or higher
-- **MongoDB**: Local instance (`mongodb://localhost:27017`) or MongoDB Atlas URI
-- **Google Gemini API Key**: From [Google AI Studio](https://aistudio.google.com/)
-- *(Optional)* **Cloudinary Account**: For cloud audio storage (falls back to local filesystem storage if omitted).
-- *(Optional)* **SendGrid API Key**: For real email dispatch (prints to console if omitted).
+- **MongoDB**: Local MongoDB instance (`mongodb://localhost:27017`) or MongoDB Atlas URI
+- **Google Gemini API Key**: Free API key from [Google AI Studio](https://aistudio.google.com/)
+- *(Optional)* **Cloudinary Account**: For cloud audio storage (defaults to local disk storage if omitted).
+- *(Optional)* **SendGrid API Key**: For real transactional email delivery (logs to console if omitted).
 
-### 1. Repository Clone & Setup
+---
+
+### 1. Clone Repository
 ```bash
 git clone https://github.com/ManojKumarTadikonda/Ai.Prof-Assignment.git careflow-ai
 cd careflow-ai
 ```
 
-### 2. Backend Configuration
+---
+
+### 2. Configure Backend Environment
 ```bash
 cd backend
 npm install
 cp .env.example .env
 ```
-Edit `backend/.env` with your credentials:
+Edit `backend/.env` with your settings:
 ```env
 PORT=4000
 MONGODB_URI=mongodb://127.0.0.1:27017/careflow
@@ -484,20 +655,28 @@ CLOUDINARY_API_SECRET=
 
 # Optional: SendGrid Email Delivery
 SENDGRID_API_KEY=
-SENDGRID_FROM_EMAIL=
+SENDGRID_FROM_EMAIL=no-reply@careflow.local
 ```
 
+---
+
 ### 3. Seed Database & Start Backend
+
+> [!IMPORTANT]
+> **Always run `npm run seed` before starting processes or simulations.**
+
 ```bash
-# Populate database with hospitals, demo users, protocols, campaigns, and synthetic test patients
+# Step 3a: Seed database with hospitals, users, protocols, campaigns, and 30 demo patients
 npm run seed
 
-# Start development server with hot-reloading
+# Step 3b: Start backend development server
 npm run dev
 ```
 *Backend runs on: `http://localhost:4000`*
 
-### 4. Frontend Configuration & Launch
+---
+
+### 4. Configure & Start Frontend
 ```bash
 cd ../frontend
 npm install
@@ -512,69 +691,56 @@ npm run dev
 | Variable | Required | Default | Purpose |
 | :--- | :---: | :--- | :--- |
 | `PORT` | No | `4000` | Backend HTTP server port |
-| `MONGODB_URI` | **Yes** | `mongodb://localhost:27017/careflow` | MongoDB connection connection string |
-| `JWT_SECRET` | **Yes** | `dev-secret-key-change-in-production` | Secret for signing staff authentication tokens |
-| `APP_URL` | **Yes** | `http://localhost:5173` | Base frontend URL for magic outreach links |
+| `MONGODB_URI` | **Yes** | `mongodb://localhost:27017/careflow` | MongoDB connection string |
+| `JWT_SECRET` | **Yes** | `dev-secret-key-change-in-production` | Secret key for signing staff JWT tokens |
+| `APP_URL` | **Yes** | `http://localhost:5173` | Base frontend URL for magic patient follow-up links |
 | `API_URL` | No | `http://localhost:4000/api` | Base API URL |
-| `GEMINI_API_KEY` | **Yes** | — | Google Gemini API key for structured AI triage |
-| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model variant |
+| `GEMINI_API_KEY` | **Yes** | — | Google Gemini API key for structured multimodal triage |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model variant (`gemini-2.5-flash` recommended) |
 | `CLOUDINARY_CLOUD_NAME`| No | — | Cloudinary cloud name for voice storage |
 | `CLOUDINARY_API_KEY` | No | — | Cloudinary API key |
 | `CLOUDINARY_API_SECRET`| No | — | Cloudinary API secret |
-| `SENDGRID_API_KEY` | No | — | SendGrid API key for email delivery |
+| `SENDGRID_API_KEY` | No | — | SendGrid API key for transactional emails |
 | `SENDGRID_FROM_EMAIL` | No | `no-reply@careflow.local` | Verified sender email address |
 
 ---
 
-## Pre-Seeded Roles & Demo Accounts
+## Verification, Testing & Safety Evaluation
 
-All seeded accounts share the default password: **`demo123`**
+The platform includes automated testing and clinical safety evaluation suites:
 
-| Role | Email | Hospital Scope | Access Permissions |
-| :--- | :--- | :--- | :--- |
-| **Platform Admin** | `platform@careflow.local` | All Hospitals (Global) | Full system administration, all queues, campaigns, reviews, and logs. |
-| **Hospital Admin** | `admin@hospital-a.local` | Apollo Demo Hospital | Full access to Hospital A patients, campaigns, queue, and staff. |
-| **Campaign Manager** | `manager@hospital-a.local`| Apollo Demo Hospital | Campaign creation, questionnaire setup, eligibility execution, queue processing. |
-| **Clinical Reviewer**| `reviewer@hospital-a.local`| Apollo Demo Hospital | Clinical review queue, escalation resolution, EHR updates. |
-| **Hospital Admin (B)**| `admin@hospital-b.local` | CityCare Demo Hospital | Hospital B partition (demonstrates multi-tenant isolation). |
-
----
-
-## Synthetic Test Scenarios
-
-The database seeder (`backend/src/seed.js`) automatically provisions 12 distinct synthetic patient scenarios designed to validate every edge case of the triage pipeline:
-
-1. **`routine`**: Patient reports feeling well, pain improving, no fever. $\implies$ *Result: Routine $\to$ Automated EHR Write.*
-2. **`concerning`**: Patient reports moderate worsening pain. $\implies$ *Result: Protocol trigger match $\to$ Escalated for Human Review.*
-3. **`urgent`**: Patient reports sudden chest tightness / breathing difficulty. $\implies$ *Result: Urgent safety trigger $\to$ High-Priority Escalation.*
-4. **`ambiguous`**: Patient provides vague answers ("I feel a bit strange"). $\implies$ *Result: High AI uncertainty $\to$ Human Review.*
-5. **`incomplete`**: Patient skips critical health details. $\implies$ *Result: Uncertain $\to$ Human Review.*
-6. **`conflicting`**: Patient reports feeling great, but mentions severe new bleeding. $\implies$ *Result: Conflict detected $\to$ Forced Human Review.*
-7. **`no-answer-retry`**: Simulates transient outreach failure $\to$ Exponential retry backoff.
-8. **`max-retries-manual-follow-up`**: Outreach exceeds 3 failed attempts $\to$ Transitions to `MANUAL_FOLLOW_UP`.
-9. **`callback`**: Patient requested callback $\to$ High priority score boost ($+40$).
-10. **`deadline-pressure`**: Follow-up window nearing expiration ($< 6\text{h}$) $\to$ Priority score boost ($+50$).
-11. **`voice-routine`**: Validates multi-audio WebM voice recording and multimodal Gemini transcription.
-12. **`tenant-isolation`**: Assigned to Hospital B to verify cross-hospital access denial.
-
----
-
-## Verification & Test Utilities
-
-The backend includes standalone CLI test suites:
-
-### 1. Test Gemini Audio & Transcript Triage
-Test end-to-end multimodal audio transcription and AI assessment against MongoDB and Cloudinary without modifying live records:
+### 1. Core Automated Unit & Integration Tests
+Validates priority scoring calculations, AI schema validation, protocol keyword overrides, and multi-pass consensus logic:
 ```bash
 cd backend
-node src/test-gemini.js
+npm run test:core
 ```
 
-### 2. Test SendGrid Email Delivery
-Validate transactional email dispatch configuration:
+### 2. Clinical Safety Evaluation Benchmark
+Runs a clinical safety evaluation dataset, computing True Positives, False Positives, True Negatives, False Negatives, and the critical **False-Negative Rate (FNR)**:
 ```bash
 cd backend
-node src/test-email.js
+
+# Option A: Gemini-Backed Evaluation (Requires GEMINI_API_KEY)
+npm run safety:evaluate
+
+# Option B: Local Deterministic Evaluation Harness (Offline)
+SAFETY_EVAL_USE_GEMINI=false npm run safety:evaluate
+```
+*Outputs a detailed evaluation report to `backend/src/evaluation/results.json`.*
+
+### 3. Gemini Multimodal Audio & Transcription Test
+Tests end-to-end multimodal audio intake, audio upload via Gemini Files API, transcription generation, and holistic triage against MongoDB:
+```bash
+cd backend
+npm run test:gemini
+```
+
+### 4. SendGrid Email Dispatch Test
+Validates transactional email delivery and template formatting:
+```bash
+cd backend
+npm run test:email
 ```
 
 ---
@@ -582,7 +748,7 @@ node src/test-email.js
 ## Safety Guardrails & Regulatory Disclaimer
 
 > [!IMPORTANT]
-> **Safety Architecture Highlights:**
+> ### Safety Architecture Principles:
 > 1. **Zero Direct EHR Writes from AI:** Google Gemini never writes to MongoDB or the EHR directly.
 > 2. **Deterministic Hardcoded Overrides:** Hardcoded hospital rules always take precedence over AI classifications.
 > 3. **Consensus Requirement:** Disagreements between AI passes force human clinical review.
@@ -590,45 +756,3 @@ node src/test-email.js
 
 > [!CAUTION]
 > **Regulatory Notice:** CareFlow AI is an administrative outreach and clinical decision-support prototype. It does not provide definitive medical diagnoses, prescribe medications, or replace certified healthcare practitioners. All clinical data presented in demo environments is synthetic. Real email inboxes should be utilized only with explicit consent during testing.
-
----
-
-## Prototype PRD Additions
-
-This prototype keeps the original CareFlow architecture and adds the operational controls required for the assignment:
-
-- Atomic outbound capacity reservation and task leasing.
-- Queue state transitions, retry/backoff, callbacks, deadline pressure and stale-worker recovery.
-- A deterministic 25-patient queue simulation that does not require paid telephony.
-- Campaign lifecycle controls: READY, SCHEDULED, RUNNING, PAUSED, COMPLETED, CANCELLED/FAILED.
-- Tenant-aware knowledge retrieval with source references.
-- Controlled AI/application tools for patient lookup, protocol lookup, callback scheduling, escalation and mock EHR operations.
-- FHIR-shaped prototype resources: Encounter, Condition, Observation, Medication, CarePlan and Communication.
-- Operational dashboard metrics and queue health endpoint.
-- Workflow events with idempotency keys.
-- Safety evaluation dataset with TP/FP/TN/FN and false-negative rate calculation.
-- Core automated tests for priority, protocol safety and consensus behavior.
-
-### Queue Simulation
-
-Use the **Queue Simulation** page after logging in as a Campaign Manager/Hospital Admin. Reset reuses the seeded demo patients/tasks created by Campaign → Eligibility. The seed contains 30 demo patients total (24 in Hospital A and 6 in Hospital B), and the same two test inboxes are used for all patient outreach. Start runs the deterministic queue simulation; Step advances one queue cycle; Pause stops it. Real prototype outreach remains available through the original `/api/queue/process` path.
-
-### Safety Evaluation
-
-Run:
-
-```bash
-npm run safety:evaluate
-```
-
-For a no-provider local harness:
-
-```bash
-SAFETY_EVAL_USE_GEMINI=false npm run safety:evaluate
-```
-
-For the actual Gemini-backed evaluation, configure `GEMINI_API_KEY` and run with `SAFETY_EVAL_USE_GEMINI=true`. The script writes `src/evaluation/results.json`.
-
-### Important prototype boundary
-
-Real outbound telephony is intentionally not required. The PRD explicitly allows deterministic call simulation for the core workflow; real telephony is an enhancement. This prototype therefore focuses engineering effort on queue correctness, safety, multi-tenancy, escalation, documentation, mock EHR, observability and evaluation.
