@@ -759,3 +759,25 @@ npm run test:email
 
 > [!CAUTION]
 > **Regulatory Notice:** CareFlow AI is an administrative outreach and clinical decision-support prototype. It does not provide definitive medical diagnoses, prescribe medications, or replace certified healthcare practitioners. All clinical data presented in demo environments is synthetic. Real email inboxes should be utilized only with explicit consent during testing.
+
+---
+
+## 🎥 Demo
+
+**Live Demo:** [CareFlow AI Demo](https://ai-prof-assignment.vercel.app/)
+
+**Demo Video:** [Watch the Demo Video](https://drive.google.com/file/d/142MtCrgTmrjy_bB43xr7zXZw7bpyeuYM/view?usp=sharing)
+
+---
+
+## 👨‍💻 Author
+
+**Manoj Kumar Tadikonda**
+
+- 📧 Email: [manojtadikonda5@gmail.com](mailto:manojtadikonda5@gmail.com)
+- 💼 LinkedIn: [Manoj Kumar Tadikonda](https://linkedin.com/in/manoj-kumar-tadikonda-504718304/)
+- 🐙 GitHub: [ManojKumarTadikonda](https://github.com/ManojKumarTadikonda)
+
+---
+
+> **CareFlow AI** — AI-assisted post-discharge healthcare follow-up and clinical escalation platform.
