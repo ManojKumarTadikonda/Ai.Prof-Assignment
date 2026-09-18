@@ -10,11 +10,21 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
+/* -------------------------------------------------------------------------- */
+/*                              GEMINI CLIENT                                 */
+/* -------------------------------------------------------------------------- */
+
 const ai = env.geminiKey
-  ? new GoogleGenAI({ apiKey: env.geminiKey })
+  ? new GoogleGenAI({
+      apiKey: env.geminiKey,
+    })
   : null;
 
-const schema = {
+/* -------------------------------------------------------------------------- */
+/*                              OUTPUT SCHEMA                                 */
+/* -------------------------------------------------------------------------- */
+
+const patientAssessmentSchema = {
   type: "object",
 
   properties: {
@@ -22,12 +32,32 @@ const schema = {
       type: "string",
     },
 
-    transcript: {
-      type: "string",
+    responses: {
+      type: "array",
+
+      items: {
+        type: "object",
+
+        properties: {
+          question_id: {
+            type: "string",
+          },
+
+          transcript: {
+            type: "string",
+          },
+        },
+
+        required: [
+          "question_id",
+          "transcript",
+        ],
+      },
     },
 
     classification: {
       type: "string",
+
       enum: [
         "routine",
         "concerning",
@@ -38,6 +68,7 @@ const schema = {
 
     evidence: {
       type: "array",
+
       items: {
         type: "string",
       },
@@ -45,6 +76,7 @@ const schema = {
 
     uncertainty: {
       type: "string",
+
       enum: [
         "low",
         "medium",
@@ -59,7 +91,7 @@ const schema = {
 
   required: [
     "detected_language",
-    "transcript",
+    "responses",
     "classification",
     "evidence",
     "uncertainty",
@@ -67,7 +99,11 @@ const schema = {
   ],
 };
 
-const transcriptSchema = {
+/* -------------------------------------------------------------------------- */
+/*                          TEXT ASSESSMENT SCHEMA                            */
+/* -------------------------------------------------------------------------- */
+
+const assessmentSchema = {
   type: "object",
 
   properties: {
@@ -75,77 +111,89 @@ const transcriptSchema = {
       type: "string",
     },
 
-    transcript: {
+    classification: {
       type: "string",
+
+      enum: [
+        "routine",
+        "concerning",
+        "urgent",
+        "uncertain",
+      ],
+    },
+
+    evidence: {
+      type: "array",
+
+      items: {
+        type: "string",
+      },
+    },
+
+    uncertainty: {
+      type: "string",
+
+      enum: [
+        "low",
+        "medium",
+        "high",
+      ],
+    },
+
+    requires_human_review: {
+      type: "boolean",
     },
   },
 
   required: [
     "detected_language",
-    "transcript",
+    "classification",
+    "evidence",
+    "uncertainty",
+    "requires_human_review",
   ],
 };
 
+/* -------------------------------------------------------------------------- */
+/*                              SYSTEM PROMPT                                 */
+/* -------------------------------------------------------------------------- */
 
 const system = `
-You are a safety-first post-discharge intake and triage assistant.
+You are a safety-first post-discharge patient intake and triage assistant.
 
 You are NOT a diagnosing clinician.
 You are NOT a prescribing clinician.
 
-Your job is only to analyze the information explicitly provided by the patient
+Your task is to analyze ONLY information explicitly provided by the patient
 and the supplied hospital protocol.
 
-STRICT RULES:
+STRICT SAFETY RULES:
 
 1. Never invent symptoms.
 2. Never invent diagnoses.
 3. Never invent medications.
-4. Never invent vitals.
-5. Never invent tests or medical history.
+4. Never invent vital signs.
+5. Never invent medical history.
 6. Never recommend medication changes.
 7. Never prescribe medication.
-8. Never override hospital protocol.
+8. Never override the hospital protocol.
 9. Never downgrade a protocol safety trigger.
-10. If information is incomplete, ambiguous, conflicting, or unsupported,
-    classify as "uncertain".
+10. If information is incomplete, ambiguous, conflicting, or unclear,
+    classify the case as "uncertain".
 11. If uncertain, require human review.
-12. Urgent cases must require human review.
-13. Use only the patient-provided information and supplied protocol.
-14. Evidence must be based on information actually present in the input.
-15. Output only the requested JSON structure.
+12. Urgent cases always require human review.
+13. Do not infer facts that the patient did not state.
+14. Evidence must be directly supported by patient responses.
+15. Output only the requested JSON.
 `;
+
+/* -------------------------------------------------------------------------- */
+/*                                  HELPERS                                   */
+/* -------------------------------------------------------------------------- */
 
 const sleep = (ms) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Safe fallback when Gemini is unavailable.
- *
- * We deliberately classify as uncertain instead of trying
- * to make a clinical decision without AI/protocol processing.
- */
-function fallback(text = "") {
-  return {
-    detected_language: "en",
-
-    transcript: text,
-
-    classification: "uncertain",
-
-    evidence: [
-      "Gemini API was unavailable or not configured; no clinical automation was performed.",
-    ],
-
-    uncertainty: "high",
-
-    requires_human_review: true,
-  };
-}
-
-/**
- * Extract HTTP/provider status code from Gemini errors.
- */
 function getErrorStatus(error) {
   return Number(
     error?.status ||
@@ -155,39 +203,52 @@ function getErrorStatus(error) {
   );
 }
 
-/**
- * Determines whether an error is transient and worth retrying.
- */
 function isRetryableError(error) {
   const status = getErrorStatus(error);
 
   return [
-    429, // Too many requests
-    500, // Internal server error
-    502, // Bad gateway
-    503, // Service unavailable
+    429,
+    500,
+    502,
+    503,
   ].includes(status);
 }
 
 /* -------------------------------------------------------------------------- */
-/*                          GEMINI GENERATION RETRY                           */
+/*                           FALLBACK RESULT                                  */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Generate Gemini content with retry/backoff.
- *
- * Retryable:
- * - 429
- * - 500
- * - 502
- * - 503
- *
- * Non-retryable errors are immediately thrown.
- */
+function fallback({
+  transcripts = [],
+  reason = "Gemini API was unavailable or not configured.",
+} = {}) {
+  return {
+    detected_language: "unknown",
+
+    responses: transcripts,
+
+    classification: "uncertain",
+
+    evidence: [
+      `${reason} No automated clinical assessment was performed.`,
+    ],
+
+    uncertainty: "high",
+
+    requires_human_review: true,
+
+    ai_status: "PROVIDER_UNAVAILABLE",
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       GEMINI GENERATION WITH RETRY                         */
+/* -------------------------------------------------------------------------- */
+
 async function generateWithRetry(
   contents,
   config,
-  attempts = 3,
+  attempts = 5,
 ) {
   if (!ai) {
     return null;
@@ -201,9 +262,17 @@ async function generateWithRetry(
     attempt++
   ) {
     try {
+      console.log(
+        `[Gemini] Generation attempt ${
+          attempt + 1
+        }/${attempts}`,
+      );
+
       return await ai.models.generateContent({
         model: env.geminiModel,
+
         contents,
+
         config,
       });
     } catch (error) {
@@ -211,20 +280,19 @@ async function generateWithRetry(
 
       const status = getErrorStatus(error);
 
-      console.warn(
-        `[Gemini] Generation attempt ${
+      console.error(
+        `[Gemini] Attempt ${
           attempt + 1
         }/${attempts} failed. Status: ${status}`,
       );
 
+      console.error(
+        `[Gemini] ${error?.message || error}`,
+      );
+
       /*
-       * Do not retry errors such as:
-       * - invalid API key
-       * - invalid request
-       * - malformed schema
-       * - unsupported model
-       *
-       * Only retry transient provider/rate-limit errors.
+       * Do not retry permanent errors such as:
+       * 400, 401, 403, invalid model, malformed request, etc.
        */
       if (
         !isRetryableError(error) ||
@@ -234,13 +302,33 @@ async function generateWithRetry(
       }
 
       /*
-       * Exponential-ish backoff:
+       * Exponential backoff.
        *
-       * attempt 1 -> 1.5 sec
-       * attempt 2 -> 3 sec
-       * attempt 3 -> no retry
+       * 429:
+       * 5s → 10s → 20s → 30s
+       *
+       * Other transient errors:
+       * 2s → 4s → 6s → 8s
        */
-      const delay = 1500 * (attempt + 1);
+      const delay =
+        status === 429
+          ? Math.min(
+              5000 *
+                Math.pow(
+                  2,
+                  attempt,
+                ),
+              30000,
+            )
+          : Math.min(
+              2000 *
+                (attempt + 1),
+              10000,
+            );
+
+      console.log(
+        `[Gemini] Waiting ${delay}ms before retry...`,
+      );
 
       await sleep(delay);
     }
@@ -253,15 +341,20 @@ async function generateWithRetry(
 /*                        CLOUDINARY URL VALIDATION                           */
 /* -------------------------------------------------------------------------- */
 
-function isAllowedCloudinaryUrl(value) {
+function isAllowedCloudinaryUrl(
+  value,
+) {
   try {
     const url = new URL(value);
 
     return (
       url.protocol === "https:" &&
       (
-        url.hostname === "res.cloudinary.com" ||
-        url.hostname.endsWith(".cloudinary.com")
+        url.hostname ===
+          "res.cloudinary.com" ||
+        url.hostname.endsWith(
+          ".cloudinary.com",
+        )
       )
     );
   } catch {
@@ -270,17 +363,9 @@ function isAllowedCloudinaryUrl(value) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                    DOWNLOAD CLOUDINARY AUDIO TO TEMP                       */
+/*                    DOWNLOAD CLOUDINARY AUDIO                              */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Download audio stored in Cloudinary to a temporary local file.
- *
- * IMPORTANT:
- * This function returns `filePath`, not `tempPath`.
- *
- * The rest of this file consistently uses `audio.filePath`.
- */
 async function downloadCloudinaryAudio(
   audioUrl,
   mimeType = "audio/webm",
@@ -291,13 +376,19 @@ async function downloadCloudinaryAudio(
     );
   }
 
-  if (!isAllowedCloudinaryUrl(audioUrl)) {
+  if (
+    !isAllowedCloudinaryUrl(
+      audioUrl,
+    )
+  ) {
     throw new Error(
-      "Invalid or unsupported audio URL",
+      "Invalid or unsupported Cloudinary audio URL",
     );
   }
 
-  const response = await fetch(audioUrl);
+  const response = await fetch(
+    audioUrl,
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -312,13 +403,16 @@ async function downloadCloudinaryAudio(
       ?.toLowerCase() ||
     mimeType;
 
-  const isAudioContent =
-    contentType.startsWith("audio/") ||
-    contentType === "video/webm";
+  const isAudio =
+    contentType.startsWith(
+      "audio/",
+    ) ||
+    contentType ===
+      "video/webm";
 
-  if (!isAudioContent) {
+  if (!isAudio) {
     throw new Error(
-      `Unsupported media content type: ${contentType}`,
+      `Unsupported audio content type: ${contentType}`,
     );
   }
 
@@ -334,7 +428,10 @@ async function downloadCloudinaryAudio(
 
   let extension = ".webm";
 
-  if (contentType === "audio/mpeg") {
+  if (
+    contentType ===
+    "audio/mpeg"
+  ) {
     extension = ".mp3";
   } else if (
     contentType === "audio/wav" ||
@@ -352,533 +449,671 @@ async function downloadCloudinaryAudio(
     extension = ".m4a";
   }
 
-  const tempPath = path.join(
+  const filePath = path.join(
     os.tmpdir(),
-    `careflow-audio-${crypto.randomUUID()}${extension}`,
+    `careflow-${crypto.randomUUID()}${extension}`,
   );
 
   await fs.writeFile(
-    tempPath,
+    filePath,
     buffer,
   );
 
   return {
-    filePath: tempPath,
+    filePath,
 
-    /*
-     * Gemini accepts audio/webm.
-     *
-     * Cloudinary can sometimes return video/webm
-     * for browser-recorded WebM files.
-     */
     mimeType:
-      contentType === "video/webm"
+      contentType ===
+      "video/webm"
         ? "audio/webm"
         : contentType,
   };
 }
 
 /* -------------------------------------------------------------------------- */
-/*                           ASSESS SINGLE ANSWER                             */
+/*                      UPLOAD MULTIPLE AUDIO FILES                           */
 /* -------------------------------------------------------------------------- */
 
-export async function assess({
-  answerText = "",
-  audioPath,
-  audioUrl,
-  audioMimeType = "audio/webm",
-  protocolText = "",
-}) {
-  /*
-   * Gemini not configured.
-   */
-  if (!ai) {
-    return fallback(answerText);
-  }
-
-  let input = [];
-
-  let uploadedFile = null;
-
-  let tempAudioPath = null;
+/**
+ * Downloads all Cloudinary recordings and uploads them to Gemini.
+ *
+ * IMPORTANT:
+ * This creates file-upload requests, but only ONE generateContent()
+ * request is made for Assessment #1.
+ */
+async function preparePatientAudio(
+  responses,
+) {
+  const prepared = [];
 
   try {
-    /* ---------------------------------------------------------------------- */
-    /*                                AUDIO                                   */
-    /* ---------------------------------------------------------------------- */
+    for (
+      let i = 0;
+      i < responses.length;
+      i++
+    ) {
+      const response =
+        responses[i];
 
-    if (audioPath || audioUrl) {
-      const audio = audioPath
-        ? {
-            filePath: audioPath,
-            mimeType: audioMimeType,
-          }
-        : await downloadCloudinaryAudio(
-            audioUrl,
-            audioMimeType,
-          );
+      if (
+        response.responseType !==
+        "VOICE"
+      ) {
+        continue;
+      }
 
-      /*
-       * IMPORTANT:
-       *
-       * Previously the project had:
-       *
-       * tempAudioPath = audio.tempPath;
-       *
-       * while the object actually contained `filePath`.
-       *
-       * That resulted in:
-       *
-       * Cannot read properties of undefined (reading 'size')
-       *
-       * because Gemini received:
-       *
-       * file: undefined
-       */
-      tempAudioPath = audio.filePath;
+      const audioUrl =
+        response.audio?.secureUrl;
 
-      uploadedFile =
+      if (!audioUrl) {
+        throw new Error(
+          `Missing Cloudinary audio URL for question ${response.questionId}`,
+        );
+      }
+
+      console.log(
+        `[Gemini] Downloading audio ${
+          i + 1
+        }/${responses.length}`,
+      );
+
+      const audio =
+        await downloadCloudinaryAudio(
+          audioUrl,
+          response.audio
+            ?.mimeType ||
+            "audio/webm",
+        );
+
+      console.log(
+        `[Gemini] Uploading audio for question ${response.questionId}`,
+      );
+
+      const uploadedFile =
         await ai.files.upload({
           file: audio.filePath,
 
           config: {
-            mimeType: audio.mimeType,
+            mimeType:
+              audio.mimeType,
           },
         });
 
-      input = [
-        createPartFromUri(
-          uploadedFile.uri,
-          uploadedFile.mimeType,
-        ),
+      prepared.push({
+        questionId:
+          response.questionId,
 
-        `
-Hospital protocol:
+        question:
+          response.question ||
+          response.questionId,
 
-${protocolText}
+        uploadedFile,
 
-${system}
-
-Transcribe this patient voice answer and assess
-only what is explicitly said.
-
-Do not infer information that is not present.
-`,
-      ];
+        filePath:
+          audio.filePath,
+      });
     }
 
-    /* ---------------------------------------------------------------------- */
-    /*                                TEXT                                    */
-    /* ---------------------------------------------------------------------- */
-
-    else {
-      input = [
-        `
-Hospital protocol:
-
-${protocolText}
-
-${system}
-
-Patient answer:
-
-${answerText}
-`,
-      ];
-    }
-
-    /* ---------------------------------------------------------------------- */
-    /*                           GEMINI REQUEST                                */
-    /* ---------------------------------------------------------------------- */
-
-    const response =
-      await generateWithRetry(
-        input,
-        {
-          systemInstruction: system,
-
-          responseMimeType:
-            "application/json",
-
-          responseSchema: schema,
-
-          temperature: 0,
-        },
-      );
-
-    if (!response?.text) {
-      return fallback(
-        audioUrl ? "" : answerText,
-      );
-    }
-
-    /* ---------------------------------------------------------------------- */
-    /*                           PARSE RESPONSE                                */
-    /* ---------------------------------------------------------------------- */
-
-    try {
-      const parsed = JSON.parse(
-        response.text,
-      );
-
-      return parsed;
-    } catch (parseError) {
-      console.warn(
-        "[Gemini] Failed to parse assessment JSON:",
-        parseError.message,
-      );
-
-      return fallback(
-        audioUrl ? "" : answerText,
-      );
-    }
+    return prepared;
   } catch (error) {
-    const status = getErrorStatus(error);
-
-    console.error(
-      "[Gemini] Assessment failed:",
-      {
-        status,
-        message: error?.message,
-      },
+    /*
+     * Clean up anything already prepared
+     * if one of the later files fails.
+     */
+    await cleanupPatientAudio(
+      prepared,
     );
 
-    /*
-     * Provider/rate-limit errors are converted
-     * into a conservative human-review result.
-     */
-    if (
-      [
-        429,
-        500,
-        502,
-        503,
-      ].includes(status)
-    ) {
-      return fallback(
-        audioUrl ? "" : answerText,
-      );
-    }
-
-    /*
-     * Non-transient errors should still be visible
-     * to the caller so they can be handled properly.
-     */
     throw error;
-  } finally {
-    /* ---------------------------------------------------------------------- */
-    /*                     DELETE GEMINI UPLOADED FILE                        */
-    /* ---------------------------------------------------------------------- */
+  }
+}
 
-    if (uploadedFile?.name) {
+/* -------------------------------------------------------------------------- */
+/*                         CLEANUP AUDIO FILES                                */
+/* -------------------------------------------------------------------------- */
+
+async function cleanupPatientAudio(
+  prepared = [],
+) {
+  for (const item of prepared) {
+    if (
+      item.uploadedFile?.name &&
+      ai
+    ) {
       try {
         await ai.files.delete({
-          name: uploadedFile.name,
+          name:
+            item.uploadedFile.name,
         });
-      } catch (deleteError) {
+      } catch (error) {
         console.warn(
-          "[Gemini] Failed to delete uploaded audio:",
-          deleteError?.message,
+          "[Gemini] Failed to delete uploaded file:",
+          error?.message,
         );
       }
     }
 
-    /* ---------------------------------------------------------------------- */
-    /*                         DELETE TEMP AUDIO                               */
-    /* ---------------------------------------------------------------------- */
-
-    if (tempAudioPath) {
+    if (item.filePath) {
       try {
         await fs.unlink(
-          tempAudioPath,
+          item.filePath,
         );
       } catch {
-        /*
-         * File may already have been removed.
-         */
+        // Already deleted / unavailable.
       }
     }
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/*                         TRANSCRIBE AUDIO ONLY                              */
+/*                ONE REQUEST: TRANSCRIBE + ASSESS ALL VOICE                 */
 /* -------------------------------------------------------------------------- */
 
-export async function transcribeAudio({
-  audioPath,
-  audioUrl,
-  audioMimeType = "audio/webm",
+export async function assessPatientVoiceResponses({
+  responses = [],
+  protocolText = "",
 }) {
-  /*
-   * If Gemini is not configured,
-   * return an empty transcript.
-   *
-   * The caller should treat this as a failure/uncertain
-   * case rather than assuming the patient said nothing.
-   */
   if (!ai) {
-    return {
-      detected_language: "en",
-      transcript: "",
-    };
+    return fallback();
   }
 
-  let tempAudioPath = null;
-
-  let uploadedFile = null;
+  let prepared = [];
 
   try {
-    /* ---------------------------------------------------------------------- */
-    /*                                AUDIO                                   */
-    /* ---------------------------------------------------------------------- */
-
-    const audio = audioPath
-      ? {
-          filePath: audioPath,
-          mimeType: audioMimeType,
-        }
-      : await downloadCloudinaryAudio(
-          audioUrl,
-          audioMimeType,
-        );
+    /*
+     * Prepare all voice recordings.
+     */
+    prepared =
+      await preparePatientAudio(
+        responses,
+      );
 
     /*
-     * IMPORTANT:
-     * Use filePath consistently.
+     * Build ONE Gemini request containing
+     * all five audio recordings.
      */
-    tempAudioPath = audio.filePath;
+    const contents = [];
 
-    /* ---------------------------------------------------------------------- */
-    /*                           UPLOAD TO GEMINI                              */
-    /* ---------------------------------------------------------------------- */
+    for (const item of prepared) {
+      contents.push(
+        `
+QUESTION ID: ${item.questionId}
 
-    uploadedFile =
-      await ai.files.upload({
-        file: audio.filePath,
-
-        config: {
-          mimeType: audio.mimeType,
-        },
-      });
-
-    /* ---------------------------------------------------------------------- */
-    /*                           TRANSCRIPTION                                 */
-    /* ---------------------------------------------------------------------- */
-
-    const response =
-      await generateWithRetry(
-        [
-          createPartFromUri(
-            uploadedFile.uri,
-            uploadedFile.mimeType,
-          ),
-
-          `
-Transcribe only the patient voice recording.
-
-Do not infer anything.
-Do not summarize.
-Do not add information.
-Do not diagnose.
-Do not interpret.
-
-Return JSON only.
+QUESTION:
+${item.question}
 `,
-        ],
+      );
 
+      contents.push(
+        createPartFromUri(
+          item.uploadedFile.uri,
+          item.uploadedFile.mimeType,
+        ),
+      );
+    }
+
+    /*
+     * Add text responses as well.
+     */
+    const textResponses =
+      responses
+        .filter(
+          (r) =>
+            r.responseType !==
+            "VOICE",
+        )
+        .map(
+          (r) =>
+            `
+QUESTION ID: ${r.questionId}
+
+QUESTION:
+${r.question || r.questionId}
+
+PATIENT TEXT ANSWER:
+${r.text || ""}
+`,
+        )
+        .join("\n");
+
+    const prompt = `
+${system}
+
+HOSPITAL PROTOCOL:
+
+${protocolText}
+
+You are receiving the COMPLETE post-discharge questionnaire.
+
+There may be multiple audio recordings.
+
+For EVERY audio recording:
+
+1. Identify it using QUESTION ID.
+2. Transcribe exactly what the patient said.
+3. Preserve the patient's meaning.
+4. Do not translate the transcript unless necessary.
+5. Do not invent missing words.
+
+After transcribing ALL responses:
+
+6. Assess the patient's COMPLETE case.
+7. Use all responses together.
+8. Apply the supplied hospital protocol.
+9. Identify concrete evidence supporting the classification.
+10. If information is incomplete, ambiguous, conflicting,
+    or clinically unclear, classify as "uncertain".
+11. Urgent findings require human review.
+
+TEXT RESPONSES:
+
+${textResponses}
+
+Return ONLY JSON matching the supplied schema.
+`;
+
+    contents.push(prompt);
+
+    console.log(
+      "\n[Gemini] Sending ONE combined voice assessment request...",
+    );
+
+    const result =
+      await generateWithRetry(
+        contents,
         {
+          systemInstruction:
+            system,
+
           responseMimeType:
             "application/json",
 
           responseSchema:
-            transcriptSchema,
+            patientAssessmentSchema,
 
           temperature: 0,
         },
+        5,
       );
 
-    if (!response?.text) {
-      return {
-        detected_language: "en",
-        transcript: "",
-      };
+    if (!result?.text) {
+      return fallback();
     }
+
+    let parsed;
 
     try {
-      return JSON.parse(
-        response.text,
+      parsed = JSON.parse(
+        result.text,
       );
-    } catch (parseError) {
-      console.warn(
-        "[Gemini] Failed to parse transcription JSON:",
-        parseError.message,
+    } catch (error) {
+      console.error(
+        "[Gemini] Invalid JSON:",
+        error?.message,
       );
 
-      return {
-        detected_language: "en",
-        transcript: "",
-      };
+      return fallback();
     }
+
+    return {
+      ...parsed,
+
+      ai_status:
+        "COMPLETED",
+    };
   } catch (error) {
-    const status = getErrorStatus(error);
+    const status =
+      getErrorStatus(error);
 
     console.error(
-      "[Gemini] Transcription failed:",
+      "[Gemini] Combined voice assessment failed:",
       {
         status,
         message: error?.message,
       },
     );
 
-    /*
-     * Keep transcription failures conservative.
-     *
-     * We do NOT invent a transcript.
-     */
-    if (
-      [
-        429,
-        500,
-        502,
-        503,
-      ].includes(status)
-    ) {
-      return {
-        detected_language: "en",
-        transcript: "",
-      };
-    }
-
-    throw error;
+    return fallback({
+      reason:
+        status === 429
+          ? "Gemini API rate/quota limit was reached after retries."
+          : "Gemini API failed while processing the patient voice responses.",
+    });
   } finally {
-    /* ---------------------------------------------------------------------- */
-    /*                     DELETE GEMINI UPLOAD                               */
-    /* ---------------------------------------------------------------------- */
-
-    if (uploadedFile?.name) {
-      try {
-        await ai.files.delete({
-          name: uploadedFile.name,
-        });
-      } catch (deleteError) {
-        console.warn(
-          "[Gemini] Failed to delete transcription upload:",
-          deleteError?.message,
-        );
-      }
-    }
-
-    /* ---------------------------------------------------------------------- */
-    /*                         DELETE TEMP FILE                                */
-    /* ---------------------------------------------------------------------- */
-
-    if (tempAudioPath) {
-      try {
-        await fs.unlink(
-          tempAudioPath,
-        );
-      } catch {
-        /*
-         * Temporary file may already be gone.
-         */
-      }
-    }
+    await cleanupPatientAudio(
+      prepared,
+    );
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/*                         HOLISTIC ASSESSMENT                                */
+/*                 SECOND REQUEST: INDEPENDENT ASSESSMENT                     */
 /* -------------------------------------------------------------------------- */
 
-export async function assessHolistic({
-  answers,
+/**
+ * IMPORTANT:
+ *
+ * Assessment #2 does NOT upload audio again.
+ *
+ * It receives the transcripts produced by Assessment #1.
+ *
+ * Therefore:
+ *
+ * Assessment #1:
+ *   audio → transcription + assessment
+ *
+ * Assessment #2:
+ *   transcripts → independent assessment
+ */
+export async function assessPatientTranscripts({
+  answers = [],
   protocolText = "",
 }) {
-  /*
-   * Gemini unavailable.
-   */
   if (!ai) {
-    return fallback(
-      answers
-        .map(
-          (a) =>
-            `${a.question}: ${a.answer}`,
-        )
-        .join(" | "),
-    );
+    return fallback();
   }
 
   const prompt = `
-Hospital protocol:
+${system}
+
+HOSPITAL PROTOCOL:
 
 ${protocolText}
 
-${system}
+You are performing an INDEPENDENT second assessment.
 
-Assess the complete post-discharge questionnaire
-as one case.
+The patient has already answered the complete
+post-discharge questionnaire.
 
-Do not diagnose.
-Do not prescribe.
-Do not recommend medication changes.
+Do NOT assume that another assessment is correct.
 
-Use only the supplied answers.
+Review the complete patient information independently.
 
-If answers are:
-
-- incomplete
-- ambiguous
-- conflicting
-- unsupported by the protocol
-
-classify as "uncertain" and require human review.
-
-Patient answers:
+PATIENT RESPONSES:
 
 ${answers
   .map(
-    (a, i) =>
-      `${i + 1}. ${a.question}: ${a.answer}`,
+    (answer, index) => `
+QUESTION ${index + 1}
+QUESTION ID: ${
+      answer.questionId ||
+      answer.id ||
+      `q${index + 1}`
+    }
+
+QUESTION:
+${answer.question}
+
+PATIENT RESPONSE:
+${answer.answer}
+`,
   )
   .join("\n")}
+
+Determine:
+
+1. routine
+2. concerning
+3. urgent
+4. uncertain
+
+Rules:
+
+- Do not diagnose.
+- Do not prescribe.
+- Do not recommend medication changes.
+- Do not invent information.
+- Follow the hospital protocol.
+- Incomplete information → uncertain.
+- Ambiguous information → uncertain.
+- Conflicting information → uncertain.
+- Urgent findings → human review.
+
+Return ONLY JSON.
 `;
 
   try {
-    const response =
+    console.log(
+      "\n[Gemini] Sending independent Assessment #2...",
+    );
+
+    const result =
       await generateWithRetry(
         [prompt],
-
         {
-          systemInstruction: system,
+          systemInstruction:
+            system,
 
           responseMimeType:
             "application/json",
 
-          responseSchema: schema,
+          responseSchema:
+            assessmentSchema,
 
           temperature: 0,
         },
+        5,
       );
 
-    if (!response?.text) {
+    if (!result?.text) {
       return fallback();
     }
 
     try {
-      return JSON.parse(
-        response.text,
-      );
-    } catch (parseError) {
-      console.warn(
-        "[Gemini] Failed to parse holistic assessment:",
-        parseError.message,
+      const parsed =
+        JSON.parse(
+          result.text,
+        );
+
+      return {
+        ...parsed,
+
+        ai_status:
+          "COMPLETED",
+      };
+    } catch (error) {
+      console.error(
+        "[Gemini] Assessment #2 JSON parsing failed:",
+        error?.message,
       );
 
       return fallback();
     }
   } catch (error) {
-    const status = getErrorStatus(error);
+    const status =
+      getErrorStatus(error);
+
+    console.error(
+      "[Gemini] Assessment #2 failed:",
+      {
+        status,
+        message: error?.message,
+      },
+    );
+
+    return fallback({
+      reason:
+        status === 429
+          ? "Gemini API rate/quota limit was reached during the second assessment."
+          : "Gemini API failed during the second independent assessment.",
+    });
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     LEGACY SINGLE TEXT ASSESSMENT                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Kept for compatibility with any existing code that still imports assess().
+ *
+ * New patient voice flow should use:
+ *
+ * assessPatientVoiceResponses()
+ * assessPatientTranscripts()
+ */
+export async function assess({
+  answerText = "",
+  protocolText = "",
+}) {
+  if (!ai) {
+    return fallback({
+      reason:
+        "Gemini API was unavailable or not configured.",
+    });
+  }
+
+  const prompt = `
+${system}
+
+HOSPITAL PROTOCOL:
+
+${protocolText}
+
+PATIENT ANSWER:
+
+${answerText}
+
+Assess this answer conservatively.
+
+Return JSON only.
+`;
+
+  try {
+    const result =
+      await generateWithRetry(
+        [prompt],
+        {
+          systemInstruction:
+            system,
+
+          responseMimeType:
+            "application/json",
+
+          responseSchema:
+            assessmentSchema,
+
+          temperature: 0,
+        },
+        5,
+      );
+
+    if (!result?.text) {
+      return fallback();
+    }
+
+    const parsed =
+      JSON.parse(
+        result.text,
+      );
+
+    return {
+      ...parsed,
+
+      transcript:
+        answerText,
+
+      ai_status:
+        "COMPLETED",
+    };
+  } catch (error) {
+    console.error(
+      "[Gemini] Single assessment failed:",
+      error?.message,
+    );
+
+    return fallback({
+      reason:
+        "Gemini API failed during assessment.",
+    });
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     LEGACY HOLISTIC ASSESSMENT                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Kept for test scripts / backwards compatibility.
+ *
+ * For the REAL patient flow, use:
+ *
+ * 1. assessPatientVoiceResponses()
+ * 2. assessPatientTranscripts()
+ */
+export async function assessHolistic({
+  answers = [],
+  protocolText = "",
+}) {
+  if (!ai) {
+    return fallback({
+      reason:
+        "Gemini API was unavailable or not configured.",
+    });
+  }
+
+  const prompt = `
+${system}
+
+HOSPITAL PROTOCOL:
+
+${protocolText}
+
+Assess the complete patient questionnaire.
+
+PATIENT ANSWERS:
+
+${answers
+  .map(
+    (answer, index) => `
+${index + 1}. ${answer.question}
+
+PATIENT ANSWER:
+${answer.answer}
+`,
+  )
+  .join("\n")}
+
+Return JSON only.
+`;
+
+  try {
+    const result =
+      await generateWithRetry(
+        [prompt],
+        {
+          systemInstruction:
+            system,
+
+          responseMimeType:
+            "application/json",
+
+          responseSchema:
+            assessmentSchema,
+
+          temperature: 0,
+        },
+        5,
+      );
+
+    if (!result?.text) {
+      return fallback();
+    }
+
+    const parsed =
+      JSON.parse(
+        result.text,
+      );
+
+    return {
+      ...parsed,
+
+      ai_status:
+        "COMPLETED",
+    };
+  } catch (error) {
+    const status =
+      getErrorStatus(error);
 
     console.error(
       "[Gemini] Holistic assessment failed:",
@@ -888,21 +1123,11 @@ ${answers
       },
     );
 
-    /*
-     * All transient Gemini failures result in
-     * conservative human review.
-     */
-    if (
-      [
-        429,
-        500,
-        502,
-        503,
-      ].includes(status)
-    ) {
-      return fallback();
-    }
-
-    throw error;
+    return fallback({
+      reason:
+        status === 429
+          ? "Gemini API rate/quota limit was reached after retries."
+          : "Gemini API failed during holistic assessment.",
+    });
   }
 }
