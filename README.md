@@ -646,7 +646,9 @@ JWT_SECRET=your_super_secret_jwt_key_32_chars_long
 APP_URL=http://localhost:5173
 API_URL=http://localhost:4000/api
 GEMINI_API_KEY=AIzaSy...your_gemini_key_here
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.6-flash
+GEMINI_FALLBACK_MODEL=gemini-3.5-flash-lite
+
 
 # Optional: Cloudinary Audio Storage
 CLOUDINARY_CLOUD_NAME=
@@ -696,7 +698,8 @@ npm run dev
 | `APP_URL` | **Yes** | `http://localhost:5173` | Base frontend URL for magic patient follow-up links |
 | `API_URL` | No | `http://localhost:4000/api` | Base API URL |
 | `GEMINI_API_KEY` | **Yes** | — | Google Gemini API key for structured multimodal triage |
-| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model variant (`gemini-2.5-flash` recommended) |
+| `GEMINI_MODEL` | No | `gemini-3.6-flash` | Gemini model variant (`gemini-3.6-flash` recommended) |
+| `GEMINI_FALLBACK_MODEL` | No | `gemini-3.5-flash-lite` | Gemini model variant (`gemini-3.5-flash-lite` recommended) for fallback |
 | `CLOUDINARY_CLOUD_NAME`| No | — | Cloudinary cloud name for voice storage |
 | `CLOUDINARY_API_KEY` | No | — | Cloudinary API key |
 | `CLOUDINARY_API_SECRET`| No | — | Cloudinary API secret |
