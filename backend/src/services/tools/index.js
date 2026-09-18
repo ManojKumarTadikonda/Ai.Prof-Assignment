@@ -39,7 +39,7 @@ export async function scheduleCallback(context, taskId, callbackAt) {
   const task = await OutreachTask.findOneAndUpdate(
     { _id: taskId, hospitalId: context.hospitalId, status: { $nin: ["COMPLETED", "ESCALATED", "MANUAL_FOLLOW_UP"] } },
     { $set: { status: "CALLBACK_SCHEDULED", callbackAt: date, callbackRequestedAt: new Date(), nextAttemptAt: date } },
-    { new: true },
+    { returnDocument: 'after' },
   );
   if (!task) throw new Error("Task cannot be scheduled for callback");
   await createWorkflowEvent({ hospitalId: context.hospitalId, type: "CALLBACK_REQUESTED", entityType: "OutreachTask", entityId: task._id, payload: { callbackAt: date }, idempotencyKey: `callback:${task._id}:${date.toISOString()}` });

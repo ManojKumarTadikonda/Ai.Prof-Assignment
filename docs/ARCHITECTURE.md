@@ -2,43 +2,69 @@
 
 ```text
 React Staff UI / Patient Follow-up UI
-                 |
-                 v
-        Express REST API + Auth/RBAC
-                 |
-      +----------+-----------+
-      |          |           |
-      v          v           v
- Campaign     Queue       AI Pipeline
- Service      Engine      (existing core)
-      |          |           |
-      |      atomic claim    +-- Gemini Pass 1
-      |      lease/capacity  +-- Gemini Pass 2
-      |      retries         +-- schema validation
-      |      callbacks       +-- protocol check
-      |      deadlines       +-- consensus
-      |                         |
-      |                    Controlled Tools
-      |                         |
-      +------------+------------+----------+
-                   |                       |
-                   v                       v
-             Mock EHR Layer          Tenant Knowledge
-                   |                  Retrieval Layer
-                   +---------+-------------+
-                             |
-                             v
-                          MongoDB
-                             |
-           +-----------------+------------------+
-           |                 |                  |
-        Audit Logs      Workflow Events    AI Usage
-           |                 |                  |
-           +-----------------+------------------+
-                             |
-                      Operational Dashboard
-                             |
-                     Queue Simulation
+                   (Multilingual Text & Audio Follow-up / Review Queue)
+                                          |
+                                          v
+                            Express REST API + Auth/RBAC
+                  (Role Enforcement, Hospital/Tenant Isolation)
+                                          |
+                   +----------------------+----------------------+
+                   |                      |                      |
+                   v                      v                      v
+            Campaign Service         Queue Engine            AI Pipeline
+                   |                      |                  (Dual-Pass)
+                   |               • Atomic claim                |
+                   |               • Capacity lease              +-- Tenant Protocol Load
+                   |               • Retries & callbacks         +-- Gemini Pass 1
+                   |               • Deadline control            +-- Gemini Pass 2
+                   |                                             +-- Consensus Check
+                   |                                             +-- Protocol Evaluation
+                   |                                                     |
+                   |                        +----------------------------+
+                   |                        |
+                   |                        v
+                   |              Case Classification Decision
+                   |                        |
+                   |         +--------------+--------------+
+                   |         | Routine                     | Urgent / Concerning
+                   |         v                             v
+                   |   Controlled Tools         [HUMAN REVIEW ESCALATION PATH]
+                   |         |                  • State -> HUMAN_REVIEW
+                   |         |                  • Escalation created & queued
+                   |         |                  • Reviewer claim & acknowledge
+                   |         |                  • Clinical notes & manual resolve
+                   |         |                             |
+                   +---------+--------------+--------------+
+                                            |
+                                            v
+                                     Controlled Layers
+                                            |
+                         +------------------+------------------+
+                         |                                     |
+                         v                                     v
+               Mock EHR Layer Interface              Tenant Knowledge Retrieval
+            (Gated; No direct AI writes;             (Hospital-scoped protocols
+             reserved for verified rules)               & source references)
+                         |                                     |
+                         +------------------+------------------+
+                                            |
+                                            v
+                                         MongoDB
+                               (State, Queues, Tenants)
+                                            |
+                         +------------------+------------------+
+                         |                  |                  |
+                         v                  v                  v
+                    Audit Logs       Workflow Events        AI Usage
+                   (Full trace:       (State machine:      (Tokens, latency,
+                   claims/reviews)     HUMAN_REVIEW)         dual-passes)
+                         |                  |                  |
+                         +------------------+------------------+
+                                            |
+                                            v
+                           Operational Dashboard & Simulation
+                       (Live Metrics, Reset/Step deterministic
+                        evaluation using the same 30 patients)
 ```
 
 ## Boundaries

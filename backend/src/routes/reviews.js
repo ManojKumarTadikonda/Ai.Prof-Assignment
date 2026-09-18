@@ -57,7 +57,7 @@ r.post("/:id/acknowledge", reviewerRoles, async (req, res, next) => {
 
 r.post("/:id/wait", reviewerRoles, async (req, res, next) => {
   try {
-    const e = await Escalation.findOneAndUpdate({ _id: req.params.id, ...tenantScope(req) }, { $set: { status: "WAITING_FOR_INFORMATION" } }, { new: true });
+    const e = await Escalation.findOneAndUpdate({ _id: req.params.id, ...tenantScope(req) }, { $set: { status: "WAITING_FOR_INFORMATION" } }, { returnDocument: 'after' });
     if (!e) return res.status(404).json({ message: "Escalation not found" });
     res.json(e);
   } catch (err) { next(err); }

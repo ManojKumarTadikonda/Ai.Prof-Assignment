@@ -242,12 +242,6 @@ patients.forEach((p, index) => {
   console.log(`${index + 1}. ${p.externalId} | ${p.email} | ${DEMO_SCENARIOS[index].key} | ${p.risk}`);
 });
 console.log("\nNext demo step: Login → Campaigns → Eligibility → Outreach Queue.");
-console.log("\nSeed complete. Test patients:");
-patients.forEach((p, index) =>
-  console.log(
-    `${index + 1}. ${p.externalId} | ${p.email} | ${scenarios[index].scenario} | ${p.risk}`,
-  ),
-);
 console.log("\nCampaigns:", ca._id, cb._id);
 console.log("Password for seeded users: demo123");
 process.exit(0);

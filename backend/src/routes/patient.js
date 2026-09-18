@@ -320,7 +320,7 @@ r.post("/outreach/:token/submit", async (req, res, next) => {
         aiProcessingError: undefined,
       },
       {
-        new: true,
+        returnDocument: 'after',
       }
     );
 

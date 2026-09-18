@@ -25,7 +25,7 @@ export async function ensureSimulationRun(hospitalId) {
   return SimulationRun.findOneAndUpdate(
     { hospitalId },
     { $setOnInsert: { hospitalId, status: "IDLE", speedMs: 2500 } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: 'after' },
   );
 }
 
@@ -108,7 +108,7 @@ export async function resetSimulation(hospitalId) {
         totalTasks: tasks.length,
       },
     },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: 'after' },
   );
 
   await audit({
@@ -146,7 +146,7 @@ export async function stepSimulation(hospitalId) {
         completedAt: remaining === 0 ? new Date() : null,
       },
     },
-    { new: true },
+    { returnDocument: 'after'},
   );
 
   console.log(`[SIMULATION] Tick complete | processed=${result.processed} | remaining=${remaining} | status=${nextStatus}`);
@@ -171,7 +171,7 @@ export async function startSimulation(hospitalId) {
   const updated = await SimulationRun.findOneAndUpdate(
     { hospitalId },
     { $set: { status: "RUNNING", startedAt: new Date(), completedAt: null } },
-    { new: true },
+    { returnDocument: 'after' },
   );
   console.log(`[SIMULATION] Started | hospital=${hospitalId} | tasks=${taskCount}`);
   return updated;
@@ -181,7 +181,7 @@ export async function pauseSimulation(hospitalId) {
   const run = await SimulationRun.findOneAndUpdate(
     { hospitalId },
     { $set: { status: "PAUSED" } },
-    { new: true },
+    { returnDocument: 'after'},
   );
   console.log(`[SIMULATION] Paused | hospital=${hospitalId}`);
   return run;

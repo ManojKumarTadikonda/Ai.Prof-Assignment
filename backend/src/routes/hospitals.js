@@ -29,7 +29,7 @@ r.patch("/:id/config", roles("PLATFORM_ADMIN", "HOSPITAL_ADMIN"), async (req, re
     const patch = {};
     for (const key of allowed) if (req.body[key] !== undefined) patch[key] = req.body[key];
     console.log(`[HOSPITAL] Updating configuration | hospital=${req.params.id} | fields=${Object.keys(patch).join(",")}`);
-    const hospital = await Hospital.findByIdAndUpdate(req.params.id, { $set: patch }, { new: true, runValidators: true });
+    const hospital = await Hospital.findByIdAndUpdate(req.params.id, { $set: patch }, { returnDocument: 'after', runValidators: true });
     if (!hospital) return res.status(404).json({ message: "Hospital not found" });
     await audit({ hospitalId: hospital._id, actorType: "USER", actorId: String(req.user._id), action: "HOSPITAL_CONFIG_UPDATED", entityType: "Hospital", entityId: String(hospital._id), details: { fields: Object.keys(patch) } });
     console.log(`[HOSPITAL] Configuration saved | hospital=${hospital.name}`);
@@ -40,7 +40,7 @@ r.patch("/:id/config", roles("PLATFORM_ADMIN", "HOSPITAL_ADMIN"), async (req, re
 r.post("/:id/ready", roles("PLATFORM_ADMIN", "HOSPITAL_ADMIN"), async (req, res, next) => {
   try {
     if (req.user.role !== "PLATFORM_ADMIN" && String(req.user.hospitalId) !== String(req.params.id)) return res.status(403).json({ message: "Forbidden" });
-    const hospital = await Hospital.findByIdAndUpdate(req.params.id, { $set: { status: "ACTIVE" } }, { new: true });
+    const hospital = await Hospital.findByIdAndUpdate(req.params.id, { $set: { status: "ACTIVE" } }, { returnDocument: 'after'});
     if (!hospital) return res.status(404).json({ message: "Hospital not found" });
     res.json(hospital);
   } catch (e) { next(e); }

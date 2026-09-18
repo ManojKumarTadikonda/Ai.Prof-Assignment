@@ -122,7 +122,7 @@ async function reserveHospitalSlot(hospitalId, capacity) {
       activeOutboundCount: { $lt: Math.max(1, Number(capacity || 1)) },
     },
     { $inc: { activeOutboundCount: 1 } },
-    { new: true },
+    { returnDocument: "after"  },
   ).lean();
 }
 
@@ -166,7 +166,7 @@ export async function claimNextTask(hospital, { blockedCampaignIds = [], simulat
       },
       $inc: { attempts: 1 },
     },
-    { sort: { priorityScore: -1, deadline: 1, createdAt: 1 }, new: true },
+    { sort: { priorityScore: -1, deadline: 1, createdAt: 1 }, returnDocument: "after"  },
   ).populate("patientId campaignId");
 
   if (!task) {
@@ -437,15 +437,15 @@ export async function processQueueOnce({ simulation = false, hospitalIds = null 
         await scheduleRetry(task, hospital, "FAILED", "Campaign is not running.");
         continue;
       }
-      if (!simulation && !isWithinCallingHours(hospital, campaign)) {
-        task.status = task.callbackAt ? "CALLBACK_SCHEDULED" : "PENDING";
-        task.nextAttemptAt = task.callbackAt || new Date(Date.now() + 60 * 60000);
-        await recordOutcome(task, "PENDING", "Outside configured calling hours; returned to queue.");
-        task.lockId = null; task.lockedAt = null; task.leaseExpiresAt = null; task.reservation = undefined;
-        await task.save();
-        await releaseHospitalSlot(hospital._id);
-        continue;
-      }
+      // if (!simulation && !isWithinCallingHours(hospital, campaign)) {
+      //   task.status = task.callbackAt ? "CALLBACK_SCHEDULED" : "PENDING";
+      //   task.nextAttemptAt = task.callbackAt || new Date(Date.now() + 60 * 60000);
+      //   await recordOutcome(task, "PENDING", "Outside configured calling hours; returned to queue.");
+      //   task.lockId = null; task.lockedAt = null; task.leaseExpiresAt = null; task.reservation = undefined;
+      //   await task.save();
+      //   await releaseHospitalSlot(hospital._id);
+      //   continue;
+      // }
 
       summary.processed++;
       console.log(`[QUEUE] Dispatching task=${task._id} | patient=${task.patientId?.name} | priority=${task.priorityScore} | mode=${simulation ? "SIMULATION" : "EMAIL"}`);

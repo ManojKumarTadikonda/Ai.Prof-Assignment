@@ -35,7 +35,7 @@ export async function processPendingEvents(limit = 50) {
     const claimed = await WorkflowEvent.findOneAndUpdate(
       { _id: event._id, status: "PENDING" },
       { $set: { status: "PROCESSING" }, $inc: { attempts: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!claimed) continue;
     try {
