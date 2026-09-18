@@ -6,6 +6,8 @@ import {
   Hospital,
   OutreachSession,
   AIAssessment,
+  EHRRecord,
+  PatientResponse,
 } from "../models/index.js";
 import { auth, tenantScope, roles } from "../middleware/auth.js";
 import { priorityScore } from "../utils/priority.js";
@@ -22,7 +24,72 @@ r.get("/", async (req, res, next) => {
       .sort({ priorityScore: -1, createdAt: 1 })
       .limit(100)
       .lean();
-    res.json(tasks);
+
+    const taskIds = tasks.map((t) => t._id);
+    const assessments = await AIAssessment.find({
+      ...tenantScope(req),
+      outreachTaskId: { $in: taskIds },
+    })
+      .sort({ assessmentNo: -1, createdAt: -1 })
+      .lean();
+
+    const latest = new Map();
+    for (const a of assessments) {
+      const key = String(a.outreachTaskId);
+      if (!latest.has(key)) latest.set(key, a);
+    }
+
+    res.json(
+      tasks.map((task) => ({
+        ...task,
+        latestAIAssessment: latest.get(String(task._id)) || null,
+      })),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
+r.get("/:id/detail", async (req, res, next) => {
+  try {
+    const task = await OutreachTask.findOne({
+      _id: req.params.id,
+      ...tenantScope(req),
+    })
+      .populate("patientId campaignId hospitalId")
+      .lean();
+
+    if (!task) return res.status(404).json({ message: "Outreach task not found" });
+
+    const [ehr, responses, assessments] = await Promise.all([
+      EHRRecord.find({ ...tenantScope(req), patientId: task.patientId._id })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .lean(),
+      PatientResponse.find({ ...tenantScope(req), outreachTaskId: task._id })
+        .sort({ createdAt: 1 })
+        .lean(),
+      AIAssessment.find({ ...tenantScope(req), outreachTaskId: task._id })
+        .sort({ assessmentNo: 1, createdAt: 1 })
+        .lean(),
+    ]);
+
+    const campaignQuestions = new Map(
+      (task.campaignId?.questions || []).map((q) => [q.id, q.text]),
+    );
+
+    res.json({
+      task,
+      patient: task.patientId,
+      campaign: task.campaignId,
+      hospital: task.hospitalId,
+      ehr,
+      responses: responses.map((r) => ({
+        ...r,
+        question: campaignQuestions.get(r.questionId) || r.questionId,
+      })),
+      assessments,
+    });
   } catch (e) {
     next(e);
   }

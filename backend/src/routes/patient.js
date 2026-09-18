@@ -13,6 +13,8 @@ import {
 import { hashToken } from "../utils/security.js";
 import { audioUpload } from "../middleware/upload.js";
 import { storeAudio } from "../services/storage.js";
+import { v2 as cloudinary } from "cloudinary";
+import { env } from "../config/env.js";
 
 import {
   assessPatientVoiceResponses,
@@ -70,7 +72,7 @@ r.get("/outreach/:token", async (req, res, next) => {
     const saved = await PatientResponse.find({
       outreachTaskId: s.outreachTaskId,
     })
-      .select("questionId text audio")
+      .select("questionId text audio transcript responseType")
       .lean();
 
     res.json({
@@ -87,8 +89,69 @@ r.get("/outreach/:token", async (req, res, next) => {
         .filter((x) => x.text?.trim() || x.audio?.assetId)
         .map((x) => x.questionId),
 
+      savedResponses: saved,
+
       expiresAt: s.expiresAt,
     });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* =========================================================
+   STREAM SAVED AUDIO FOR PATIENT PLAYBACK
+
+   The patient UI uses this token-protected endpoint instead of
+   exposing Cloudinary authenticated assets directly.
+========================================================= */
+
+r.get("/outreach/:token/response/:questionId/audio", async (req, res, next) => {
+  try {
+    const s = await getSession(req.params.token);
+    if (!s) return res.status(404).json({ message: "Invalid or expired link" });
+
+    const response = await PatientResponse.findOne({
+      outreachTaskId: s.outreachTaskId,
+      questionId: req.params.questionId,
+    }).lean();
+
+    if (!response?.audio?.assetId) {
+      return res.status(404).json({ message: "Audio response not found" });
+    }
+
+    if (response.audio.provider === "local") {
+      return res.sendFile(response.audio.assetId);
+    }
+
+    const configured =
+      env.cloudinary.cloudName &&
+      env.cloudinary.apiKey &&
+      env.cloudinary.apiSecret;
+
+    if (!configured) {
+      return res.status(404).json({ message: "Audio storage is unavailable" });
+    }
+
+    cloudinary.config({
+      cloud_name: env.cloudinary.cloudName,
+      api_key: env.cloudinary.apiKey,
+      api_secret: env.cloudinary.apiSecret,
+      secure: true,
+    });
+
+    const mime = response.audio.mimeType || "audio/webm";
+    const format = mime.includes("mp4") || mime.includes("m4a") ? "m4a" : "webm";
+    const signedUrl = cloudinary.utils.private_download_url(
+      response.audio.assetId,
+      format,
+      {
+        resource_type: "video",
+        type: "authenticated",
+        attachment: false,
+      },
+    );
+
+    return res.redirect(signedUrl);
   } catch (e) {
     next(e);
   }
@@ -133,10 +196,6 @@ r.post(
         questionId: qid,
       });
 
-      if (existing) {
-        return res.json(existing);
-      }
-
       let audio = null;
       let text = req.body.text || "";
 
@@ -163,19 +222,26 @@ r.post(
          Save response
       --------------------------------------------------- */
 
-      const response = await PatientResponse.create({
-        hospitalId: s.hospitalId,
-        patientId: s.patientId,
-        campaignId: s.campaignId,
-        outreachTaskId: s.outreachTaskId,
-        questionId: qid,
+      let response;
 
-        responseType: audio ? "VOICE" : "TEXT",
-
-        text: text || undefined,
-
-        audio,
-      });
+      if (existing) {
+        existing.responseType = audio ? "VOICE" : "TEXT";
+        existing.text = text || undefined;
+        if (audio) existing.audio = audio;
+        existing.transcript = undefined;
+        response = await existing.save();
+      } else {
+        response = await PatientResponse.create({
+          hospitalId: s.hospitalId,
+          patientId: s.patientId,
+          campaignId: s.campaignId,
+          outreachTaskId: s.outreachTaskId,
+          questionId: qid,
+          responseType: audio ? "VOICE" : "TEXT",
+          text: text || undefined,
+          audio,
+        });
+      }
 
       res.json(response);
     } catch (e) {
